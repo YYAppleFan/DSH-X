@@ -145,6 +145,7 @@ await writeFile(
 <key>CFBundleName</key><string>DSH-X</string>
 <key>CFBundleDisplayName</key><string>DSH-X</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
+<key>CFBundleIconName</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>${plistEscape(pkg.version)}</string>
 <key>CFBundleVersion</key><string>${plistEscape(pkg.version)}</string>
@@ -153,6 +154,30 @@ await writeFile(
 </dict></plist>`,
 )
 run('plutil', ['-lint', join(contents, 'Info.plist')])
+
+const xcassets = join(root, 'assets', 'AppIcon.xcassets')
+if (existsSync(xcassets)) {
+  try {
+    const actoolCheck = spawnSync('which', ['actool'])
+    if (actoolCheck.status === 0) {
+      run('actool', [
+        '--compile',
+        join(contents, 'Resources'),
+        '--platform',
+        'macosx',
+        '--minimum-deployment-target',
+        '11.0',
+        '--target-device',
+        'mac',
+        '--app-icon',
+        'AppIcon',
+        xcassets,
+      ])
+    }
+  } catch {
+    // actool requires full Xcode; dynamic Cocoa appearance detection in launcher handles live switching
+  }
+}
 
 console.log('Codesigning bundle...')
 run('codesign', ['--force', '--sign', '-', join(nodeDir, 'node')])
