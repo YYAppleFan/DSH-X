@@ -1,21 +1,71 @@
 name: Build macOS App
 on:
   workflow_dispatch:
+    inputs:
+      target_runner:
+        description: 'Target macOS ARM runner'
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - 'auto'
+          - 'macos-27'
+          - 'xcode-27'
+          - 'macos-26'
   push:
     branches: [macos-port, master]
+
 permissions:
   contents: read
+
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-14
-            arch: arm64
-          - runner: macos-15-intel
-            arch: x64
-    runs-on: ${{ matrix.runner }}
+  build-macos-27:
+    name: Build (macOS 27 ARM64)
+    if: github.event.inputs.target_runner != 'macos-26'
+    runs-on: ${{ github.event.inputs.target_runner == 'xcode-27' && 'xcode-27' || 'macos-27' }}
+    continue-on-error: true
+    timeout-minutes: 45
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+    outputs:
+      build_success: ${{ steps.build.outcome }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+      - name: Check architecture and Rust
+        run: |
+          test "$(node -p process.arch)" = 'arm64'
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Backend tests
+        run: npm run test:mac-port
+      - name: Configure Xcode environment
+        run: |
+          if [ -d "/Applications/Xcode.app" ]; then
+            sudo xcode-select -s /Applications/Xcode.app
+          fi
+          xcrun actool --version || true
+      - name: Build, sign and smoke-test app
+        id: build
+        run: npm run dist:mac
+      - uses: actions/upload-artifact@v4
+        if: steps.build.outcome == 'success'
+        with:
+          name: DSH-X-macOS-arm64
+          path: |
+            release/DSH-X-macOS-arm64.zip
+            release/DSH-X-macOS-arm64.zip.sha256
+            release/DSH-X.app/Contents/Resources/Assets.car
+          if-no-files-found: warn
+          retention-days: 14
+
+  build-macos-26:
+    name: Build (macOS 26 ARM64 - Fallback)
+    needs: build-macos-27
+    if: always() && (needs.build-macos-27.outputs.build_success != 'success' || github.event.inputs.target_runner == 'macos-26')
+    runs-on: macos-26
     timeout-minutes: 45
     env:
       MACOSX_DEPLOYMENT_TARGET: '11.0'
@@ -26,7 +76,7 @@ jobs:
           node-version: '22.19.0'
       - name: Check architecture and Rust
         run: |
-          test "$(node -p process.arch)" = '${{ matrix.arch }}'
+          test "$(node -p process.arch)" = 'arm64'
           rustup toolchain install stable --profile minimal
           rustup default stable
       - name: Backend tests
@@ -41,10 +91,26 @@ jobs:
         run: npm run dist:mac
       - uses: actions/upload-artifact@v4
         with:
-          name: DSH-X-macOS-${{ matrix.arch }}
+          name: DSH-X-macOS-arm64
           path: |
-            release/DSH-X-macOS-${{ matrix.arch }}.zip
-            release/DSH-X-macOS-${{ matrix.arch }}.zip.sha256
+            release/DSH-X-macOS-arm64.zip
+            release/DSH-X-macOS-arm64.zip.sha256
             release/DSH-X.app/Contents/Resources/Assets.car
           if-no-files-found: warn
           retention-days: 14
+
+  build-status:
+    name: Build Status
+    needs: [build-macos-27, build-macos-26]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify build succeeded
+        run: |
+          if [ "${{ needs.build-macos-27.outputs.build_success }}" = "success" ] || [ "${{ needs.build-macos-26.result }}" = "success" ]; then
+            echo "macOS ARM64 app was successfully built and packaged!"
+            exit 0
+          else
+            echo "Both macOS 27 and macOS 26 runners failed to build the app."
+            exit 1
+          fi
