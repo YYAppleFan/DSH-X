@@ -1,0 +1,700 @@
+diff --git a/.github/workflows/macos.yml b/.github/workflows/macos.yml
+new file mode 100644
+index 0000000..2059463
+--- /dev/null
++++ b/.github/workflows/macos.yml
+@@ -0,0 +1,43 @@
++name: Build macOS App
++on:
++  workflow_dispatch:
++  push:
++    branches: [macos-port]
++permissions:
++  contents: read
++jobs:
++  build:
++    strategy:
++      fail-fast: false
++      matrix:
++        include:
++          - runner: macos-14
++            arch: arm64
++          - runner: macos-15-intel
++            arch: x64
++    runs-on: ${{ matrix.runner }}
++    timeout-minutes: 45
++    env:
++      MACOSX_DEPLOYMENT_TARGET: '11.0'
++    steps:
++      - uses: actions/checkout@v4
++      - uses: actions/setup-node@v4
++        with:
++          node-version: '22.19.0'
++      - name: Check architecture and Rust
++        run: |
++          test "$(node -p process.arch)" = '${{ matrix.arch }}'
++          rustup toolchain install stable --profile minimal
++          rustup default stable
++      - name: Backend tests
++        run: npm run test:mac-port
++      - name: Build, sign and smoke-test app
++        run: npm run dist:mac
++      - uses: actions/upload-artifact@v4
++        with:
++          name: DSH-X-macOS-${{ matrix.arch }}
++          path: |
++            release/DSH-X-macOS-${{ matrix.arch }}.zip
++            release/DSH-X-macOS-${{ matrix.arch }}.zip.sha256
++          if-no-files-found: error
++          retention-days: 14
+diff --git a/MACOS.md b/MACOS.md
+new file mode 100644
+index 0000000..266234e
+--- /dev/null
++++ b/MACOS.md
+@@ -0,0 +1,59 @@
++# DSH-X macOS 移植候选版
++
++基于 yyh-001/DSH-X 提交 e1ca30400bf826c58b82de1ac595d2f2869bb2f2，版本 0.1.12。
++
++## 当前状态
++
++这是待 macOS 构建验证的源码，**不是已编译的 App**。
++Linux 环境已验证 JavaScript 语法、平台路径、XML 转义，以及管理服务 HTTP 启停和非 Windows 自更新隔离（3 个测试通过，1 个 macOS 专属测试跳过）。
++尚未运行 macOS Rust 编译、原生界面、代码签名、完整 DSH 安装/插件安装测试，不能把源码检查视为移植成功。
++
++## 改动
++
++- 原生 Rust 启动器添加 macOS 条件分支；识别 .app 的 Contents/Resources/app 布局。
++- 使用 macOS open 命令、POSIX PATH 分隔符和内置 node；菜单栏图标支持菜单操作。
++- 配置、日志、版本安装和 WebView 数据使用 ~/Library/Application Support/DSH-X；DSH 自身数据仍在 ~/.dsh。
++- 通过用户 LaunchAgent 支持下次登录启动。应先把 App 放到最终位置，再开启该选项；移动 App 后重新开关该选项。
++- 缺失或不兼容的 npm 下载到用户目录，避免破坏 App 签名。
++- DSH 子进程放入独立进程组，停止时发送组 SIGTERM。
++- Mac 禁止下载/运行上游 Windows 启动器更新包，启动器本身需手动更新。DSH 版本管理不受此限制。
++- 保留 Windows 打包入口，同时新增 dist:mac。
++
++## 本地 Mac 构建
++
++需要 Xcode Command Line Tools、Rust stable，以及 Node.js 22.19+（22.x）或兼容的 24+。
++
++```bash
++xcode-select --install
++# 安装 Rust 后在项目目录执行：
++npm run test:mac-port
++npm run dist:mac
++```
++
++项目本身没有 npm 运行依赖。打包脚本会下载并核对 Node 22.19.0 的官方 SHA-256，随包加入 npm 与 pnpm 8.15.9，再编译原生启动器。
++构建结果：
++
++- release/DSH-X.app
++- release/DSH-X-macOS-arm64.zip（Apple Silicon）或 release/DSH-X-macOS-x64.zip（Intel）
++- 对应的 .sha256 校验文件
++
++构建架构跟随运行构建的 Mac，不能把 Intel 二进制改名为 arm64。
++脚本会检查签名，并启动 App 验证管理 HTTP 服务、用户数据目录和正常退出。此检查不等于人工界面验证，也不包含 DSH 模型调用。
++默认使用 ad-hoc 签名，没有 Apple Developer ID 签名或公证；下载到其他 Mac 时，系统可能要求在“系统设置 → 隐私与安全性”中确认打开。
++
++## GitHub Actions 云端构建
++
++已准备 `.github/workflows/macos.yml`。在有权限的 fork 或你自己的仓库中，推送 `macos-port` 分支会自动构建；也可将工作流放到默认分支，通过 Actions 的 **Build macOS App → Run workflow** 手动运行。
++两种架构分别使用 `macos-14`（arm64）和 `macos-15-intel`（x64）。
++构建通过后，从该次运行的 Artifacts 下载压缩包。流程不会自动发布 Release，也不需要 Apple 签名密钥。
++
++## 首轮 macOS 验收
++
++1. 构建任务和原生启动冒烟测试通过。
++2. 解压、将 App 拖入 Applications，从 Finder 启动。
++3. 确认管理窗口、菜单栏菜单、隐藏/重新打开、退出。
++4. 安装一个 DSH 版本，启动官方 Web，安装/启停插件，停止后检查没有遗留进程。
++5. 开启登录启动、注销/登录验证，再关闭验证。
++6. 确认 App 内部没有写入数据，运行前后的 codesign 验证均通过。
++
++上述 macOS 验收当前均未完成。若云端 runner 无可用图形会话，App 冒烟测试可能失败，需要在真实登录的 Mac 会话里进一步确认。
+diff --git a/launcher/main.rs b/launcher/main.rs
+index af01124..b7d3fa6 100644
+--- a/launcher/main.rs
++++ b/launcher/main.rs
+@@ -1,5 +1,4 @@
+-#![cfg(windows)]
+-#![windows_subsystem = "windows"]
++#![cfg_attr(windows, windows_subsystem = "windows")]
+ 
+ //! 启动器外壳：拉起 node 跑管理服务，再把这个管理页装进一个自己的窗口。
+ //!
+@@ -12,6 +11,7 @@
+ 
+ use std::io::{BufRead, BufReader, Read, Write};
+ use std::net::TcpStream;
++#[cfg(windows)]
+ use std::os::windows::process::CommandExt;
+ use std::path::{Path, PathBuf};
+ use std::process::{Command, Stdio};
+@@ -26,6 +26,7 @@ use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+ use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+ use wry::{WebContext, WebViewBuilder};
+ 
++#[cfg(windows)]
+ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+ const MANAGER_URL: &str = "http://127.0.0.1:3780/";
+ const MANAGER_ADDR: &str = "127.0.0.1:3780";
+@@ -141,7 +142,7 @@ fn build_tray(root: &Path) -> Option<Tray> {
+     let icon = TrayIconBuilder::new()
+         .with_menu(Box::new(menu))
+         // 左键留给「打开启动器界面」，菜单走右键
+-        .with_menu_on_left_click(false)
++        .with_menu_on_left_click(cfg!(target_os = "macos"))
+         .with_tooltip("DSH-X")
+         .with_icon(load_tray_icon(root)?)
+         .build()
+@@ -303,10 +304,13 @@ fn manager_is_up() -> bool {
+ 
+ /// 拉不起窗口时退回老做法：让系统浏览器打开管理页。
+ fn open_in_browser(url: &str) {
+-    let _ = Command::new("cmd")
+-        .args(["/c", "start", "", url])
+-        .creation_flags(CREATE_NO_WINDOW)
+-        .spawn();
++    #[cfg(windows)]
++    let _ = Command::new("cmd").args(["/c", "start", "", url])
++        .creation_flags(CREATE_NO_WINDOW).spawn();
++    #[cfg(target_os = "macos")]
++    let _ = Command::new("/usr/bin/open").arg(url).spawn();
++    #[cfg(not(any(windows, target_os = "macos")))]
++    let _ = Command::new("xdg-open").arg(url).spawn();
+ }
+ 
+ /// 极简 HTTP GET，只用来问本机管理服务一个短路径；读完整响应取正文即可。
+@@ -357,8 +361,12 @@ fn load_window_icon(root: &Path) -> Option<tao::window::Icon> {
+ 
+ fn main() {
+     let exe = std::env::current_exe().expect("current exe");
++    #[cfg(target_os = "macos")]
++    let root = exe.parent().expect("MacOS dir").parent().expect("Contents dir")
++        .join("Resources").join("app");
++    #[cfg(not(target_os = "macos"))]
+     let root = exe.parent().expect("install dir").to_path_buf();
+-    let node = root.join("node").join("node.exe");
++    let node = root.join("node").join(if cfg!(windows) { "node.exe" } else { "node" });
+     let script = root.join("start.js");
+ 
+     // 已经有实例在跑就别再走后面那一套了。否则会先建出一个窗口、再拉一次 node 和
+@@ -371,7 +379,7 @@ fn main() {
+ 
+     let mut path = node.parent().unwrap().display().to_string();
+     if let Ok(old) = std::env::var("PATH") {
+-        path.push(';');
++        path.push(if cfg!(windows) { ';' } else { ':' });
+         path.push_str(&old);
+     }
+ 
+@@ -382,8 +390,10 @@ fn main() {
+             .current_dir(&root)
+             .env("PATH", &path)
+             // stdout 走管道：node 用一行约定标记叫我们把窗口叫到前面
+-            .stdout(Stdio::piped())
+-            .creation_flags(CREATE_NO_WINDOW);
++            .stdout(Stdio::piped());
++        #[cfg(windows)]
++        command.creation_flags(CREATE_NO_WINDOW);
++        command.env("DSH_APP_EXECUTABLE", &exe);
+         if app_window {
+             // 告诉 start.js：管理页由本进程的窗口承载，别再自己开浏览器
+             command.env("DSH_APP_WINDOW", "1");
+@@ -401,7 +411,7 @@ fn main() {
+             event_loop,
+             &root,
+             "启动器文件不完整",
+-            "缺少 node/node.exe 或 start.js，多半是安装没完成、或者被杀毒软件清理掉了。",
++            "缺少内置 Node.js 或 start.js，请重新安装完整的应用。",
+             "重新安装一次 DSH-X 即可。",
+         );
+     }
+@@ -458,11 +468,12 @@ fn main() {
+     // WebView2 的初始化是启动里最贵的一段，放在 node 之后做，两者就能并行。
+     // 建不出来（WebView2 缺失等）就降级成「只有托盘、没有窗口」，浏览器顶上管理页，
+     // 绝不能在 node 已经在跑的时候直接退出——那会留下没人管的进程。
+-    let data_dir = std::env::var("APPDATA")
+-        .map(PathBuf::from)
+-        .unwrap_or_else(|_| root.clone())
+-        .join("DSH")
+-        .join("webview");
++    #[cfg(target_os = "macos")]
++    let data_dir = PathBuf::from(std::env::var("HOME").expect("HOME"))
++        .join("Library/Application Support/DSH-X/webview");
++    #[cfg(not(target_os = "macos"))]
++    let data_dir = std::env::var("APPDATA").map(PathBuf::from)
++        .unwrap_or_else(|_| root.clone()).join("DSH").join("webview");
+     let _ = std::fs::create_dir_all(&data_dir);
+     let mut context = WebContext::new(Some(data_dir));
+ 
+@@ -620,6 +631,7 @@ fn main() {
+                     window.set_focus();
+                 }
+             }
++            Event::LoopDestroyed => { let _ = http_post(MANAGER_ADDR, "/api/quit"); }
+             Event::UserEvent(UserEvent::Exited) => *control_flow = ControlFlow::ExitWithCode(0),
+             Event::UserEvent(UserEvent::Tray(next)) => {
+                 state = next;
+diff --git a/package.json b/package.json
+index ac5e254..379962c 100644
+--- a/package.json
++++ b/package.json
+@@ -12,7 +12,9 @@
+   "scripts": {
+     "start": "node start.js",
+     "server": "node server.js",
+-    "dist": "node scripts/pack.mjs"
++    "dist": "node scripts/pack.mjs",
++    "dist:mac": "node scripts/pack-macos.mjs",
++    "test:mac-port": "node --test tests/macos-port.test.mjs"
+   },
+   "author": "yyh",
+   "license": "MIT"
+diff --git a/platform.js b/platform.js
+new file mode 100644
+index 0000000..35ae3bc
+--- /dev/null
++++ b/platform.js
+@@ -0,0 +1,13 @@
++import { homedir } from 'node:os'
++import { dirname, join } from 'node:path'
++import { fileURLToPath } from 'node:url'
++
++export const ROOT = dirname(fileURLToPath(import.meta.url))
++export function stateDirectory(platform = process.platform, home = homedir(), appData = process.env.APPDATA) {
++  if (platform === 'darwin') return join(home, 'Library', 'Application Support', 'DSH-X')
++  return appData ? join(appData, 'DSH') : join(ROOT, 'data')
++}
++export const STATE_DIR = stateDirectory()
++export function plistEscape(value) {
++  return String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c])
++}
+diff --git a/registry.js b/registry.js
+index 357699f..9bedba4 100644
+--- a/registry.js
++++ b/registry.js
+@@ -1,3 +1,4 @@
++import { STATE_DIR } from './platform.js'
+ import { spawn } from 'node:child_process'
+ import { randomBytes } from 'node:crypto'
+ import { createWriteStream, existsSync } from 'node:fs'
+@@ -10,7 +11,8 @@ import { fileURLToPath } from 'node:url'
+ import pkg from './package.json' with { type: 'json' }
+ 
+ const APP_ROOT = dirname(fileURLToPath(import.meta.url))
+-const LOCAL_NODE = join(APP_ROOT, 'node')
++const BUNDLED_NODE = join(APP_ROOT, 'node')
++const LOCAL_NODE = process.platform === 'darwin' ? join(STATE_DIR, 'runtime') : BUNDLED_NODE
+ export const REGISTRY = (process.env.npm_config_registry || 'https://registry.npmmirror.com').replace(/\/$/, '')
+ const USER_AGENT = `dsh-versions/${pkg.version || '0.0.0'}`
+ const packumentCache = new Map()
+@@ -184,7 +186,7 @@ function npmCli(home) {
+ }
+ 
+ function npmHomes() {
+-  return [...new Set([LOCAL_NODE, dirname(process.execPath)])]
++  return [...new Set([LOCAL_NODE, BUNDLED_NODE, dirname(process.execPath), join(dirname(process.execPath), '..', 'lib')])]
+ }
+ 
+ function foundNpm() {
+diff --git a/scripts/pack-macos.mjs b/scripts/pack-macos.mjs
+new file mode 100644
+index 0000000..ee7f2b3
+--- /dev/null
++++ b/scripts/pack-macos.mjs
+@@ -0,0 +1,90 @@
++import { spawnSync } from 'node:child_process'
++import { createHash } from 'node:crypto'
++import { cp, mkdir, readFile, rm, writeFile, chmod } from 'node:fs/promises'
++import { dirname, join } from 'node:path'
++import { fileURLToPath } from 'node:url'
++import { plistEscape } from '../platform.js'
++
++if (process.platform !== 'darwin') throw new Error('macOS packaging requires a Mac or a macOS CI runner.')
++const root = dirname(dirname(fileURLToPath(import.meta.url)))
++const arch = process.arch
++if (!['arm64', 'x64'].includes(arch)) throw new Error(`Unsupported architecture: ${arch}`)
++const nodeVersion = process.env.DSH_NODE_VERSION || '22.19.0'
++if (!/^\d+\.\d+\.\d+$/.test(nodeVersion)) throw new Error('Invalid Node version')
++const release = join(root, 'release')
++const app = join(release, 'DSH-X.app')
++const contents = join(app, 'Contents')
++const resources = join(contents, 'Resources')
++const appRoot = join(resources, 'app')
++const vendor = join(root, 'vendor', `mac-${arch}`)
++const runtimeName = `node-v${nodeVersion}-darwin-${arch}`
++const archiveName = `${runtimeName}.tar.gz`
++function run(cmd, args, cwd = root) {
++  const result = spawnSync(cmd, args, { cwd, stdio: 'inherit' })
++  if (result.error) throw result.error
++  if (result.status !== 0) throw new Error(`${cmd} exited ${result.status}`)
++}
++await mkdir(vendor, { recursive: true })
++// curl uses the runner's proxy and CA configuration; validate the official checksum.
++const base = `https://nodejs.org/dist/v${nodeVersion}`
++run('curl', ['--fail', '--location', '--retry', '3', '-o', join(vendor, archiveName), `${base}/${archiveName}`])
++run('curl', ['--fail', '--location', '--retry', '3', '-o', join(vendor, 'SHASUMS256.txt'), `${base}/SHASUMS256.txt`])
++const sumLine = (await readFile(join(vendor, 'SHASUMS256.txt'), 'utf8')).split('\n')
++  .find(line => line.trim().split(/\s+/)[1] === archiveName)
++const actual = createHash('sha256').update(await readFile(join(vendor, archiveName))).digest('hex')
++if (!sumLine || sumLine.split(/\s+/)[0] !== actual) throw new Error('Node archive checksum mismatch')
++await rm(join(vendor, runtimeName), { recursive: true, force: true })
++run('tar', ['-xzf', join(vendor, archiveName), '-C', vendor])
++const runtime = join(vendor, runtimeName)
++run('cargo', ['build', '--release', '--locked'], join(root, 'launcher'))
++run('cargo', ['test', '--locked'], join(root, 'launcher'))
++await rm(app, { recursive: true, force: true })
++await mkdir(join(contents, 'MacOS'), { recursive: true })
++await mkdir(appRoot, { recursive: true })
++for (const file of ['platform.js', 'start.js', 'server.js', 'registry.js', 'settings.js', 'plugins.js', 'plugin-tool.js', 'stdio-unblock.cjs', 'package.json', 'LICENSE']) {
++  await cp(join(root, file), join(appRoot, file))
++}
++for (const folder of ['public', 'assets', 'perf', 'compat']) {
++  await cp(join(root, folder), join(appRoot, folder), { recursive: true })
++}
++const nodeDir = join(appRoot, 'node')
++await mkdir(join(nodeDir, 'node_modules'), { recursive: true })
++await cp(join(runtime, 'bin', 'node'), join(nodeDir, 'node'))
++await cp(join(runtime, 'LICENSE'), join(nodeDir, 'LICENSE'))
++// pnpm is required by DSH plugin installation, including the marketplace seed.
++run(join(nodeDir, 'node'), [join(runtime, 'lib/node_modules/npm/bin/npm-cli.js'), 'install', '--prefix', nodeDir,
++  '--registry=https://registry.npmjs.org', '--no-audit', '--no-fund', '--ignore-scripts', 'pnpm@8.15.9'])
++await cp(join(runtime, 'lib', 'node_modules', 'npm'), join(nodeDir, 'node_modules', 'npm'), { recursive: true })
++for (const [name, cli] of Object.entries({ npm: 'npm/bin/npm-cli.js', npx: 'npm/bin/npx-cli.js', pnpm: 'pnpm/bin/pnpm.cjs', pnpx: 'pnpm/bin/pnpx.cjs' })) {
++  await writeFile(join(nodeDir, name), `#!/bin/sh\nexec "$(dirname "$0")/node" "$(dirname "$0")/node_modules/${cli}" "$@"\n`, { mode: 0o755 })
++}
++await cp(join(root, 'launcher/target/release/DSH'), join(contents, 'MacOS', 'DSH'))
++await chmod(join(contents, 'MacOS', 'DSH'), 0o755)
++const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
++await writeFile(join(contents, 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0"><dict>
++<key>CFBundleExecutable</key><string>DSH</string>
++<key>CFBundleIdentifier</key><string>local.dsh-x.launcher</string>
++<key>CFBundleName</key><string>DSH-X</string>
++<key>CFBundleDisplayName</key><string>DSH-X</string>
++<key>CFBundlePackageType</key><string>APPL</string>
++<key>CFBundleShortVersionString</key><string>${plistEscape(pkg.version)}</string>
++<key>CFBundleVersion</key><string>${plistEscape(pkg.version)}</string>
++<key>LSMinimumSystemVersion</key><string>11.0</string>
++<key>NSHighResolutionCapable</key><true/>
++</dict></plist>`)
++run('plutil', ['-lint', join(contents, 'Info.plist')])
++// Ad-hoc signing supports local use; this is not Developer ID signing/notarization.
++run('codesign', ['--force', '--sign', '-', join(nodeDir, 'node')])
++run('codesign', ['--force', '--sign', '-', app])
++run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', app])
++run(join(nodeDir, 'node'), ['--version'])
++run(join(nodeDir, 'node'), ['--test', join(root, 'tests/macos-port.test.mjs')])
++run(join(nodeDir, 'node'), [join(root, 'scripts/smoke-macos.mjs'), app])
++const zip = join(release, `DSH-X-macOS-${arch}.zip`)
++await rm(zip, { force: true })
++run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', app, zip])
++const sha = createHash('sha256').update(await readFile(zip)).digest('hex')
++await writeFile(`${zip}.sha256`, `${sha}  DSH-X-macOS-${arch}.zip\n`)
++console.log(`Built and smoke-tested: ${zip}`)
+diff --git a/scripts/pack.mjs b/scripts/pack.mjs
+index ab8ca6c..960084b 100644
+--- a/scripts/pack.mjs
++++ b/scripts/pack.mjs
+@@ -127,6 +127,7 @@ async function assemble() {
+   await mkdir(join(OUT, 'public'), { recursive: true })
+   await mkdir(join(OUT, 'assets'), { recursive: true })
+   for (const file of [
++    'platform.js',
+     'start.js',
+     'server.js',
+     'registry.js',
+diff --git a/scripts/smoke-macos.mjs b/scripts/smoke-macos.mjs
+new file mode 100644
+index 0000000..3bb6d83
+--- /dev/null
++++ b/scripts/smoke-macos.mjs
+@@ -0,0 +1,51 @@
++import assert from 'node:assert/strict'
++import { spawn } from 'node:child_process'
++import { mkdtemp, rm, access } from 'node:fs/promises'
++import { join, resolve } from 'node:path'
++import { tmpdir } from 'node:os'
++import { setTimeout as delay } from 'node:timers/promises'
++
++const app = resolve(process.argv[2])
++const home = await mkdtemp(join(tmpdir(), 'dsh-x-smoke-'))
++const base = 'http://127.0.0.1:3780'
++try {
++  await fetch(`${base}/api/state`, { signal: AbortSignal.timeout(500) })
++  throw new Error('Smoke test requires port 3780 to be free')
++} catch (e) {
++  if (e.message === 'Smoke test requires port 3780 to be free') throw e
++}
++const child = spawn(join(app, 'Contents/MacOS/DSH'), [], {
++  env: { ...process.env, HOME: home, DSH_VERSIONS_DATA: join(home, 'versions') },
++  stdio: 'inherit',
++})
++let exited = false
++let exitCode
++let spawnError
++child.on('error', e => { spawnError = e; exited = true })
++child.on('exit', code => { exited = true; exitCode = code })
++try {
++  let ready = false
++  for (let i = 0; i < 80 && !exited; i++) {
++    try {
++      const res = await fetch(`${base}/api/state`, { signal: AbortSignal.timeout(1000) })
++      if (res.ok) { await res.json(); ready = true; break }
++    } catch { /* waiting for application startup */ }
++    await delay(250)
++  }
++  if (spawnError) throw spawnError
++  assert.ok(ready, `App did not start its backend; exit=${exitCode}`)
++  const page = await fetch(`${base}/`)
++  assert.equal(page.status, 200)
++  assert.match(await page.text(), /<html/i)
++  await access(join(home, 'Library/Application Support/DSH-X'))
++  const quit = await fetch(`${base}/api/quit`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
++  assert.equal(quit.status, 200)
++  await quit.json()
++  for (let i = 0; i < 80 && !exited; i++) await delay(250)
++  assert.ok(exited, 'App did not exit after backend shutdown')
++  assert.equal(exitCode, 0)
++  console.log('App launch, HTTP management page, writable state and quit passed.')
++} finally {
++  if (!exited) child.kill('SIGTERM')
++  await rm(home, { recursive: true, force: true })
++}
+diff --git a/server.js b/server.js
+index b406040..0e27246 100644
+--- a/server.js
++++ b/server.js
+@@ -1,3 +1,4 @@
++import { STATE_DIR } from './platform.js'
+ import { execFile, spawn, spawnSync } from 'node:child_process'
+ import { createServer } from 'node:http'
+ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+@@ -42,7 +43,7 @@ const GITHUB_SPEC_RE = /^github:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:#[\w./-]+)?$/
+ const READY_RE = /dsh web:\s+(https?:\/\/[^\s]+)/
+ const START_TIMEOUT_MS = 120_000
+ const PROFILE_NAME = 'web'
+-const LOG_DIR = process.env.APPDATA ? join(process.env.APPDATA, 'DSH') : join(ROOT, 'data')
++const LOG_DIR = STATE_DIR
+ const LOG_FILE = join(LOG_DIR, 'manager.log')
+ const LOG_MAX_BYTES = 5 * 1024 * 1024
+ const NOISY_LOG_RE = /^(?:已安装 \d+\/\d+|已解析 \d+)/
+@@ -290,6 +291,7 @@ function cleanStaleUpdates() {
+ 
+ /** 第一步：下载 + 校验。进度通过 selfUpdate 事件推给页面。 */
+ async function downloadSelfUpdate() {
++  if (process.platform !== 'win32') throw new Error('此平台请手动安装新版 DSH-X App')
+   const info = await checkSelfUpdate()
+   const target = join(tmpdir(), `DSH-X-update-${info.latest || 'latest'}.exe`)
+   pushLog(`下载更新${info.latest ? ` ${info.latest}` : ''}…`)
+@@ -356,6 +358,7 @@ function waitForProcess(name, timeoutMs) {
+  * 里开着的页面收掉。
+  */
+ async function installSelfUpdate() {
++  if (process.platform !== 'win32') throw new Error('此平台请手动安装新版 DSH-X App')
+   const staged = stagedUpdate
+   if (!staged || !existsSync(staged.file)) throw new Error('更新包还没下载好')
+   const name = basename(staged.file)
+@@ -550,7 +553,7 @@ function dshEnv(version) {
+  */
+ function withBundledRuntime(pathValue) {
+   const dir = join(ROOT, 'node')
+-  if (!existsSync(join(dir, 'node.exe'))) return pathValue
++  if (!existsSync(join(dir, process.platform === 'win32' ? 'node.exe' : 'node'))) return pathValue
+   const parts = String(pathValue).split(delimiter).filter(Boolean)
+   return [dir, ...parts.filter((item) => item !== dir)].join(delimiter)
+ }
+@@ -590,6 +593,7 @@ function spawnDsh(version, extra) {
+   return spawn(process.execPath, args, {
+     cwd: home,
+     env: dshEnv(version),
++    detached: process.platform !== 'win32',
+     stdio: ['ignore', 'pipe', 'pipe'],
+     windowsHide: true,
+   })
+@@ -639,6 +643,7 @@ function stripTag(tag) {
+ }
+ 
+ async function checkSelfUpdate() {
++  if (process.platform !== 'win32') return { current: APP_VERSION, latest: null, update: false, url: '', manual: true }
+   const current = APP_VERSION
+   const url = `https://github.com/${APP_REPO}/releases/latest/download/${APP_SETUP}`
+   const fallback = { current, latest: null, update: false, url }
+@@ -1173,7 +1178,7 @@ function killTree(pid) {
+     return
+   }
+   try {
+-    process.kill(pid, 'SIGTERM')
++    process.kill(-pid, 'SIGTERM')
+   } catch {
+     // already gone
+   }
+diff --git a/settings.js b/settings.js
+index 63d4511..883b06d 100644
+--- a/settings.js
++++ b/settings.js
+@@ -1,13 +1,15 @@
++import { homedir } from 'node:os'
++import { STATE_DIR, plistEscape } from './platform.js'
+ import { execFile } from 'node:child_process'
+ import { existsSync, readFileSync } from 'node:fs'
+-import { mkdir, readFile, writeFile } from 'node:fs/promises'
++import { mkdir, readFile, writeFile, rm } from 'node:fs/promises'
+ import { dirname, isAbsolute, join, resolve } from 'node:path'
+ import { fileURLToPath } from 'node:url'
+ import { promisify } from 'node:util'
+ 
+ const execFileAsync = promisify(execFile)
+ const ROOT = dirname(fileURLToPath(import.meta.url))
+-const SETTINGS_DIR = process.env.APPDATA ? join(process.env.APPDATA, 'DSH') : join(ROOT, 'data')
++const SETTINGS_DIR = STATE_DIR
+ const SETTINGS_FILE = join(SETTINGS_DIR, 'settings.json')
+ const RUN_REG = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
+ const RUN_NAME = 'DSH'
+@@ -34,6 +36,7 @@ export function safeDataDir(dir) {
+ }
+ 
+ export function fallbackDataDir() {
++  if (process.platform === 'darwin') return join(STATE_DIR, 'data')
+   const local = join(ROOT, 'data')
+   if (hasInstall(local)) return local
+   if (process.env.APPDATA) {
+@@ -117,7 +120,10 @@ function runReg(args) {
+   return execFileAsync('reg.exe', args, { windowsHide: true, encoding: 'utf8' })
+ }
+ 
++const LOGIN_PLIST = join(homedir(), 'Library', 'LaunchAgents', 'local.dsh-x.launcher.plist')
++
+ export async function autoStartEnabled() {
++  if (process.platform === 'darwin') return existsSync(LOGIN_PLIST)
+   if (process.platform !== 'win32') return false
+   try {
+     await runReg(['query', RUN_REG, '/v', RUN_NAME])
+@@ -128,6 +134,20 @@ export async function autoStartEnabled() {
+ }
+ 
+ export async function setAutoStart(enabled) {
++  if (process.platform === 'darwin') {
++    if (!enabled) { await rm(LOGIN_PLIST, { force: true }); return }
++    const args = process.env.DSH_APP_EXECUTABLE
++      ? [process.env.DSH_APP_EXECUTABLE]
++      : [process.execPath, join(ROOT, 'start.js')]
++    await mkdir(dirname(LOGIN_PLIST), { recursive: true })
++    await writeFile(LOGIN_PLIST, `<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0"><dict><key>Label</key><string>local.dsh-x.launcher</string>
++<key>ProgramArguments</key><array>${args.map(a => `<string>${plistEscape(a)}</string>`).join('')}</array>
++<key>RunAtLoad</key><true/><key>LimitLoadToSessionType</key><string>Aqua</string>
++</dict></plist>`, { mode: 0o600 })
++    return
++  }
+   if (process.platform !== 'win32') {
+     if (enabled) throw new Error('开机自启目前只支持 Windows')
+     return
+diff --git a/start.js b/start.js
+index 7b881a0..2e3d702 100644
+--- a/start.js
++++ b/start.js
+@@ -1,3 +1,4 @@
++import { STATE_DIR } from './platform.js'
+ import { execFile } from 'node:child_process'
+ import { appendFileSync, mkdirSync } from 'node:fs'
+ import { dirname, join } from 'node:path'
+@@ -14,7 +15,7 @@ const MANAGER_URL = 'http://127.0.0.1:3780/'
+ // 由 DSH.exe 拉起时它设这个变量：管理页装进它自己的窗口，托盘也归它，
+ // 这里就只剩服务本身，不用再往系统浏览器里开页面。
+ const APP_WINDOW = process.env.DSH_APP_WINDOW === '1'
+-const LOG_DIR = process.env.APPDATA ? join(process.env.APPDATA, 'DSH') : join(ROOT, 'data')
++const LOG_DIR = STATE_DIR
+ const LOG = join(LOG_DIR, 'manager.log')
+ 
+ function log(...args) {
+diff --git a/tests/macos-port.test.mjs b/tests/macos-port.test.mjs
+new file mode 100644
+index 0000000..db448f0
+--- /dev/null
++++ b/tests/macos-port.test.mjs
+@@ -0,0 +1,80 @@
++import test from 'node:test'
++import assert from 'node:assert/strict'
++import { mkdtemp, rm } from 'node:fs/promises'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { spawn } from 'node:child_process'
++import { stateDirectory, plistEscape } from '../platform.js'
++
++test('macOS state stays outside the application bundle', () => {
++  assert.equal(stateDirectory('darwin', '/Users/test', '/wrong'), '/Users/test/Library/Application Support/DSH-X')
++  assert.equal(stateDirectory('win32', '/unused', '/roaming'), '/roaming/DSH')
++})
++test('LaunchAgent paths escape XML special characters', () => {
++  assert.equal(plistEscape('/Users/A&B/<test>/"app"'), '/Users/A&amp;B/&lt;test&gt;/&quot;app&quot;')
++})
++test('settings use a writable macOS location and login registration is reversible', { skip: process.platform !== 'darwin' }, async () => {
++  const home = await mkdtemp(join(tmpdir(), 'dsh-x-settings-'))
++  try {
++    const code = `
++      import assert from 'node:assert/strict';
++      import { readFile } from 'node:fs/promises';
++      import { join } from 'node:path';
++      import { fallbackDataDir, saveSettings, loadSettings, setAutoStart, autoStartEnabled } from './settings.js';
++      assert.equal(fallbackDataDir(), join(process.env.HOME, 'Library/Application Support/DSH-X/data'));
++      await saveSettings({ seedMarket: false });
++      assert.equal((await loadSettings()).seedMarket, false);
++      await setAutoStart(true);
++      assert.equal(await autoStartEnabled(), true);
++      const plist = await readFile(join(process.env.HOME, 'Library/LaunchAgents/local.dsh-x.launcher.plist'), 'utf8');
++      assert.ok(plist.includes('A&amp;B'));
++      await setAutoStart(false);
++      assert.equal(await autoStartEnabled(), false);
++    `
++    const child = spawn(process.execPath, ['--input-type=module', '-e', code], {
++      cwd: new URL('../', import.meta.url),
++      env: { ...process.env, HOME: home, DSH_APP_EXECUTABLE: '/Applications/A&B.app/Contents/MacOS/DSH' }, stdio: 'inherit',
++    })
++    await new Promise((resolve, reject) => {
++      child.on('error', reject)
++      child.on('exit', code => code === 0 ? resolve() : reject(new Error(`settings test exited ${code}`)))
++    })
++  } finally { await rm(home, { recursive: true, force: true }) }
++})
++
++test('management HTTP lifecycle and Windows updater isolation', { skip: process.platform === 'win32', timeout: 15000 }, async () => {
++  const home = await mkdtemp(join(tmpdir(), 'dsh-x-http-'))
++  const child = spawn(process.execPath, ['--input-type=module', '-e', `
++    import assert from 'node:assert/strict';
++    import { startServer, stopAll } from './server.js';
++    try {
++      await startServer();
++      const base = 'http://127.0.0.1:' + process.env.PORT;
++      const page = await fetch(base + '/');
++      assert.equal(page.status, 200);
++      assert.match(await page.text(), /<html/i);
++      const state = await (await fetch(base + '/api/state')).json();
++      assert.equal(state.dataDir, process.env.DSH_VERSIONS_DATA);
++      const update = await (await fetch(base + '/api/self')).json();
++      assert.equal(update.update, false);
++      assert.equal(update.manual, true);
++      for (const route of ['/api/self/download', '/api/self/install']) {
++        const response = await fetch(base + route, { method: 'POST', body: '{}' });
++        assert.equal(response.status, 500);
++        assert.match((await response.json()).error, /手动安装/);
++      }
++    } finally { await stopAll(); }
++  `], {
++    cwd: new URL('../', import.meta.url),
++    env: { ...process.env, HOME: home, APPDATA: home, DSH_VERSIONS_DATA: join(home, 'versions'), PORT: '39783' }, stdio: 'inherit',
++  })
++  try {
++    await new Promise((resolve, reject) => {
++      child.on('error', reject)
++      child.on('exit', code => code === 0 ? resolve() : reject(new Error(`HTTP test exited ${code}`)))
++    })
++  } finally {
++    if (child.exitCode === null) child.kill('SIGTERM')
++    await rm(home, { recursive: true, force: true })
++  }
++})
