@@ -65,9 +65,6 @@ enum UserEvent {
     Quit,
     /// 轮询到的最新托盘状态
     Tray(TrayState),
-    /// macOS 系统深浅色外观切换
-    #[cfg(target_os = "macos")]
-    Theme(bool),
 }
 
 /// 从 /api/tray 读回来的状态（纯文本 key=value，见 server.js）
@@ -435,95 +432,6 @@ fn load_window_icon(root: &Path) -> Option<tao::window::Icon> {
     tao::window::Icon::from_rgba(rgba, width, height).ok()
 }
 
-#[cfg(target_os = "macos")]
-mod macos_icon {
-    use std::ffi::{c_char, c_void, CString};
-    use std::path::Path;
-
-    type Id = *mut c_void;
-    type Sel = *mut c_void;
-
-    extern "C" {
-        fn objc_getClass(name: *const c_char) -> Id;
-        fn sel_registerName(name: *const c_char) -> Sel;
-        fn objc_msgSend();
-    }
-
-    pub fn is_dark_mode() -> bool {
-        let output = std::process::Command::new("/usr/bin/defaults")
-            .args(["read", "-g", "AppleInterfaceStyle"])
-            .output();
-        if let Ok(out) = output {
-            if out.status.success() {
-                let style = String::from_utf8_lossy(&out.stdout);
-                return style.trim() == "Dark";
-            }
-        }
-        false
-    }
-
-    pub fn update_dock_icon(resources_dir: &Path, dark: bool) {
-        let icon_file = if dark { "AppIcon-dark.icns" } else { "AppIcon.icns" };
-        let mut icon_path = resources_dir.join(icon_file);
-        if !icon_path.exists() {
-            icon_path = resources_dir.join("../assets").join(icon_file);
-            if !icon_path.exists() {
-                return;
-            }
-        }
-
-        let path_str = icon_path.to_string_lossy();
-        let c_path = match CString::new(path_str.as_bytes()) {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-
-        unsafe {
-            let msg_no_args: unsafe extern "C" fn(Id, Sel) -> Id =
-                std::mem::transmute(objc_msgSend as *const ());
-            let msg_one_arg: unsafe extern "C" fn(Id, Sel, Id) -> Id =
-                std::mem::transmute(objc_msgSend as *const ());
-
-            // [NSApplication sharedApplication]
-            let nsapp_cls = objc_getClass(b"NSApplication\0".as_ptr() as *const c_char);
-            if nsapp_cls.is_null() {
-                return;
-            }
-            let sel_shared = sel_registerName(b"sharedApplication\0".as_ptr() as *const c_char);
-            let app = msg_no_args(nsapp_cls, sel_shared);
-            if app.is_null() {
-                return;
-            }
-
-            // [[NSImage alloc] initWithContentsOfFile:path]
-            let nsimage_cls = objc_getClass(b"NSImage\0".as_ptr() as *const c_char);
-            if nsimage_cls.is_null() {
-                return;
-            }
-            let sel_alloc = sel_registerName(b"alloc\0".as_ptr() as *const c_char);
-            let image_alloc = msg_no_args(nsimage_cls, sel_alloc);
-            if image_alloc.is_null() {
-                return;
-            }
-
-            // [NSString stringWithUTF8String:c_path]
-            let nsstring_cls = objc_getClass(b"NSString\0".as_ptr() as *const c_char);
-            let sel_string = sel_registerName(b"stringWithUTF8String:\0".as_ptr() as *const c_char);
-            let ns_path = msg_one_arg(nsstring_cls, sel_string, c_path.as_ptr() as Id);
-
-            let sel_init = sel_registerName(b"initWithContentsOfFile:\0".as_ptr() as *const c_char);
-            let image = msg_one_arg(image_alloc, sel_init, ns_path);
-            if image.is_null() {
-                return;
-            }
-
-            // [app setApplicationIconImage:image]
-            let sel_set_icon = sel_registerName(b"setApplicationIconImage:\0".as_ptr() as *const c_char);
-            let _ = msg_one_arg(app, sel_set_icon, image);
-        }
-    }
-}
-
 fn main() {
     let exe = std::env::current_exe().expect("current exe");
     #[cfg(target_os = "macos")]
@@ -577,13 +485,6 @@ fn main() {
     let mut builder = EventLoopBuilder::<UserEvent>::with_user_event();
     let event_loop = builder.build();
     let proxy = event_loop.create_proxy();
-
-    // macOS: 启动时如果系统处于暗色模式，立即应用暗色 Dock 图标
-    #[cfg(target_os = "macos")]
-    {
-        let is_dark = macos_icon::is_dark_mode();
-        macos_icon::update_dock_icon(&resources, is_dark);
-    }
 
     // 事件循环要先建出来：启动失败的话，我们要用自己的窗口把原因说清楚，而不是弹系统对话框
     if !node.exists() || !script.exists() {
@@ -645,25 +546,6 @@ fn main() {
                 break;
             }
             thread::sleep(Duration::from_millis(1500));
-        });
-    }
-
-    // macOS: 动态感知系统外观（深色/浅色模式），通知主线程切换程序坞（Dock）图标
-    #[cfg(target_os = "macos")]
-    {
-        let proxy = proxy.clone();
-        thread::spawn(move || {
-            let mut current_dark = macos_icon::is_dark_mode();
-            loop {
-                thread::sleep(Duration::from_millis(1500));
-                let dark = macos_icon::is_dark_mode();
-                if dark != current_dark {
-                    current_dark = dark;
-                    if proxy.send_event(UserEvent::Theme(dark)).is_err() {
-                        break;
-                    }
-                }
-            }
         });
     }
 
@@ -847,10 +729,6 @@ fn main() {
                     tray.sync(&state);
                 }
             }
-            #[cfg(target_os = "macos")]
-            Event::UserEvent(UserEvent::Theme(dark)) => {
-                macos_icon::update_dock_icon(&resources, dark);
-            }
             Event::UserEvent(UserEvent::Minimize) => {
                 if let Some(window) = &window {
                     window.set_minimized(true);
@@ -903,12 +781,5 @@ mod tests {
     #[test]
     fn missing_icon_is_not_fatal() {
         assert!(load_window_icon(Path::new("does-not-exist")).is_none());
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn detects_macos_dark_mode_state() {
-        let is_dark = macos_icon::is_dark_mode();
-        println!("Current macOS appearance is_dark={is_dark}");
     }
 }
