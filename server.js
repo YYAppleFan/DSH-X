@@ -1,3 +1,4 @@
+import { STATE_DIR } from './platform.js'
 import { execFile, spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
@@ -66,7 +67,7 @@ const READY_RE = /dsh web:\s+(https?:\/\/[^\s]+)/
 const START_TIMEOUT_MS = 120_000
 // 启动 profile：设置页可改，startServer() 里按设置定值
 let PROFILE_NAME = resolveProfile()
-const LOG_DIR = process.env.APPDATA ? join(process.env.APPDATA, 'DSH') : join(ROOT, 'data')
+const LOG_DIR = STATE_DIR
 const LOG_FILE = join(LOG_DIR, 'manager.log')
 const LOG_MAX_BYTES = 5 * 1024 * 1024
 const NOISY_LOG_RE = /^(?:已安装 \d+\/\d+|已解析 \d+)/
@@ -314,6 +315,7 @@ function cleanStaleUpdates() {
 
 /** 第一步：下载 + 校验。进度通过 selfUpdate 事件推给页面。 */
 async function downloadSelfUpdate() {
+  if (process.platform !== 'win32') throw new Error('此平台请手动安装新版 DSH-X App')
   const info = await checkSelfUpdate()
   const target = join(tmpdir(), `DSH-X-update-${info.latest || 'latest'}.exe`)
   pushLog(`下载更新${info.latest ? ` ${info.latest}` : ''}…`)
@@ -380,6 +382,7 @@ function waitForProcess(name, timeoutMs) {
  * 里开着的页面收掉。
  */
 async function installSelfUpdate() {
+  if (process.platform !== 'win32') throw new Error('此平台请手动安装新版 DSH-X App')
   const staged = stagedUpdate
   if (!staged || !existsSync(staged.file)) throw new Error('更新包还没下载好')
   const name = basename(staged.file)
@@ -589,7 +592,7 @@ function dshEnv(version) {
  */
 function withBundledRuntime(pathValue) {
   const dir = join(ROOT, 'node')
-  if (!existsSync(join(dir, 'node.exe'))) return pathValue
+  if (!existsSync(join(dir, process.platform === 'win32' ? 'node.exe' : 'node'))) return pathValue
   const parts = String(pathValue).split(delimiter).filter(Boolean)
   return [dir, ...parts.filter((item) => item !== dir)].join(delimiter)
 }
@@ -629,6 +632,7 @@ function spawnDsh(version, extra) {
   return spawn(process.execPath, args, {
     cwd: home,
     env: dshEnv(version),
+    detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   })
@@ -679,6 +683,9 @@ function stripTag(tag) {
 
 async function checkSelfUpdate() {
   const current = APP_VERSION
+  if (process.platform !== 'win32') {
+    return { current, latest: null, update: false, url: '', manual: true }
+  }
   const url = `https://github.com/${APP_REPO}/releases/latest/download/${APP_SETUP}`
   const fallback = { current, latest: null, update: false, url }
   if (selfCache.data && Date.now() - selfCache.at < 30 * 60 * 1000) return selfCache.data
@@ -1212,7 +1219,7 @@ function killTree(pid) {
     return
   }
   try {
-    process.kill(pid, 'SIGTERM')
+    process.kill(-pid, 'SIGTERM')
   } catch {
     // already gone
   }

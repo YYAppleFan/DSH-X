@@ -1,3 +1,4 @@
+import { STATE_DIR } from './platform.js'
 import { execFile } from 'node:child_process'
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -16,7 +17,7 @@ const MANAGER_URL = `http://127.0.0.1:${PORT}/`
 // 由 DSH.exe 拉起时它设这个变量：管理页装进它自己的窗口，托盘也归它，
 // 这里就只剩服务本身，不用再往系统浏览器里开页面。
 const APP_WINDOW = process.env.DSH_APP_WINDOW === '1'
-const LOG_DIR = process.env.APPDATA ? join(process.env.APPDATA, 'DSH') : join(ROOT, 'data')
+const LOG_DIR = STATE_DIR
 const LOG = join(LOG_DIR, 'manager.log')
 
 function log(...args) {

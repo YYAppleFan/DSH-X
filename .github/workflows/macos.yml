@@ -1,0 +1,43 @@
+name: Build macOS App
+on:
+  workflow_dispatch:
+  push:
+    branches: [macos-port, master]
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+      - name: Check architecture and Rust
+        run: |
+          test "$(node -p process.arch)" = '${{ matrix.arch }}'
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Backend tests
+        run: npm run test:mac-port
+      - name: Build, sign and smoke-test app
+        run: npm run dist:mac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DSH-X-macOS-${{ matrix.arch }}
+          path: |
+            release/DSH-X-macOS-${{ matrix.arch }}.zip
+            release/DSH-X-macOS-${{ matrix.arch }}.zip.sha256
+          if-no-files-found: error
+          retention-days: 14

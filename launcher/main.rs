@@ -1,5 +1,4 @@
-#![cfg(windows)]
-#![windows_subsystem = "windows"]
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 //! 启动器外壳：拉起 node 跑管理服务，再把这个管理页装进一个自己的窗口。
 //!
@@ -12,6 +11,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -27,6 +27,7 @@ use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use wry::{WebContext, WebViewBuilder};
 
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// 管理页默认端口；设置页里可以改（存在 %APPDATA%\DSH\settings.json）。
 const DEFAULT_PORT: u16 = 3780;
@@ -143,8 +144,8 @@ fn build_tray(root: &Path) -> Option<Tray> {
     }
     let icon = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        // 左键留给「打开启动器界面」，菜单走右键
-        .with_menu_on_left_click(false)
+        // 左键留给「打开启动器界面」，菜单走右键；macOS 下菜单栏图标默认左键弹菜单
+        .with_menu_on_left_click(cfg!(target_os = "macos"))
         .with_tooltip("DSH-X")
         .with_icon(load_tray_icon(root)?)
         .build()
@@ -303,9 +304,13 @@ static LIVE_PORT: OnceLock<u16> = OnceLock::new();
 
 fn configured_port() -> u16 {
     *CONFIGURED_PORT.get_or_init(|| {
-        let text = std::env::var_os("APPDATA")
-            .map(|dir| Path::new(&dir).join("DSH").join("settings.json"))
-            .and_then(|file| std::fs::read_to_string(file).ok());
+        #[cfg(target_os = "macos")]
+        let path = std::env::var_os("HOME")
+            .map(|dir| Path::new(&dir).join("Library/Application Support/DSH-X/settings.json"));
+        #[cfg(not(target_os = "macos"))]
+        let path = std::env::var_os("APPDATA")
+            .map(|dir| Path::new(&dir).join("DSH").join("settings.json"));
+        let text = path.and_then(|file| std::fs::read_to_string(file).ok());
         text.and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
             .and_then(|json| json.get("port").and_then(|value| value.as_u64()))
             .filter(|port| (1..=65535).contains(port))
@@ -359,21 +364,25 @@ fn wait_for_manager() -> Option<u16> {
     }
 }
 
-
-
 /// 用系统默认程序打开链接。
-///
-/// 别用 `cmd /c start`：cmd 会把 URL 再解析一遍，里面的 `&` 就是语句分隔符，
-/// 页面上任何一个链接（插件页面、更新日志）被构造成 `http://127.0.0.1:1/?&calc`
-/// 就成了任意命令执行。这里直接调 ShellExecuteW——`start` 内部走的也是它，
-/// 参数按 argv 原样传，中间没有 shell。
 fn open_in_browser(url: &str) {
-    use windows_sys::Win32::UI::Shell::ShellExecuteW;
-    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-    let verb: Vec<u16> = "open\0".encode_utf16().collect();
-    let file: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
-    unsafe {
-        ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL);
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::Shell::ShellExecuteW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let verb: Vec<u16> = "open\0".encode_utf16().collect();
+        let file: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe {
+            ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("/usr/bin/open").arg(url).spawn();
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = Command::new("xdg-open").arg(url).spawn();
     }
 }
 
@@ -425,8 +434,17 @@ fn load_window_icon(root: &Path) -> Option<tao::window::Icon> {
 
 fn main() {
     let exe = std::env::current_exe().expect("current exe");
+    #[cfg(target_os = "macos")]
+    let root = exe
+        .parent()
+        .expect("MacOS dir")
+        .parent()
+        .expect("Contents dir")
+        .join("Resources")
+        .join("app");
+    #[cfg(not(target_os = "macos"))]
     let root = exe.parent().expect("install dir").to_path_buf();
-    let node = root.join("node").join("node.exe");
+    let node = root.join("node").join(if cfg!(windows) { "node.exe" } else { "node" });
     let script = root.join("start.js");
 
     // 已经有实例在跑就别再走后面那一套了。否则会先建出一个窗口、再拉一次 node 和
@@ -440,7 +458,7 @@ fn main() {
 
     let mut path = node.parent().unwrap().display().to_string();
     if let Ok(old) = std::env::var("PATH") {
-        path.push(';');
+        path.push(if cfg!(windows) { ';' } else { ':' });
         path.push_str(&old);
     }
 
@@ -451,8 +469,10 @@ fn main() {
             .current_dir(&root)
             .env("PATH", &path)
             // stdout 走管道：node 用一行约定标记叫我们把窗口叫到前面
-            .stdout(Stdio::piped())
-            .creation_flags(CREATE_NO_WINDOW);
+            .stdout(Stdio::piped());
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW);
+        command.env("DSH_APP_EXECUTABLE", &exe);
         if app_window {
             // 告诉 start.js：管理页由本进程的窗口承载，别再自己开浏览器
             command.env("DSH_APP_WINDOW", "1");
@@ -470,7 +490,7 @@ fn main() {
             event_loop,
             &root,
             "启动器文件不完整",
-            "缺少 node/node.exe 或 start.js，多半是安装没完成、或者被杀毒软件清理掉了。",
+            "缺少内置 Node.js 或 start.js，请重新安装完整的应用。",
             "重新安装一次 DSH-X 即可。",
         );
     }
@@ -527,6 +547,10 @@ fn main() {
     // WebView2 的初始化是启动里最贵的一段，放在 node 之后做，两者就能并行。
     // 建不出来（WebView2 缺失等）就降级成「只有托盘、没有窗口」，浏览器顶上管理页，
     // 绝不能在 node 已经在跑的时候直接退出——那会留下没人管的进程。
+    #[cfg(target_os = "macos")]
+    let data_dir = PathBuf::from(std::env::var("HOME").expect("HOME"))
+        .join("Library/Application Support/DSH-X/webview");
+    #[cfg(not(target_os = "macos"))]
     let data_dir = std::env::var("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|_| root.clone())
@@ -687,7 +711,13 @@ fn main() {
                     window.set_focus();
                 }
             }
-            Event::UserEvent(UserEvent::Exited) => *control_flow = ControlFlow::ExitWithCode(0),
+            Event::LoopDestroyed => {
+                let _ = http_post(&manager_addr(), "/api/quit");
+            }
+            Event::UserEvent(UserEvent::Exited) => {
+                *control_flow = ControlFlow::ExitWithCode(0);
+                std::process::exit(0);
+            }
             Event::UserEvent(UserEvent::Tray(next)) => {
                 state = next;
                 if let Some(tray) = &tray {

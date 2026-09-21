@@ -12,7 +12,9 @@
   "scripts": {
     "start": "node start.js",
     "server": "node server.js",
-    "dist": "node scripts/pack.mjs"
+    "dist": "node scripts/pack.mjs",
+    "dist:mac": "node scripts/pack-macos.mjs",
+    "test:mac-port": "node --test tests/macos-port.test.mjs"
   },
   "author": "yyh",
   "license": "MIT"

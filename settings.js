@@ -1,13 +1,15 @@
+import { homedir } from 'node:os'
 import { execFile } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { STATE_DIR, plistEscape } from './platform.js'
 
 const execFileAsync = promisify(execFile)
 const ROOT = dirname(fileURLToPath(import.meta.url))
-const SETTINGS_DIR = process.env.APPDATA ? join(process.env.APPDATA, 'DSH') : join(ROOT, 'data')
+const SETTINGS_DIR = STATE_DIR
 const SETTINGS_FILE = join(SETTINGS_DIR, 'settings.json')
 const RUN_REG = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
 const RUN_NAME = 'DSH'
@@ -85,6 +87,7 @@ export function safeDataDir(dir) {
 }
 
 export function fallbackDataDir() {
+  if (process.platform === 'darwin') return join(STATE_DIR, 'data')
   const local = join(ROOT, 'data')
   if (hasInstall(local)) return local
   if (process.env.APPDATA) {
@@ -182,7 +185,10 @@ function runReg(args) {
   return execFileAsync('reg.exe', args, { windowsHide: true, encoding: 'utf8' })
 }
 
+const LOGIN_PLIST = join(homedir(), 'Library', 'LaunchAgents', 'local.dsh-x.launcher.plist')
+
 export async function autoStartEnabled() {
+  if (process.platform === 'darwin') return existsSync(LOGIN_PLIST)
   if (process.platform !== 'win32') return false
   try {
     await runReg(['query', RUN_REG, '/v', RUN_NAME])
@@ -193,8 +199,29 @@ export async function autoStartEnabled() {
 }
 
 export async function setAutoStart(enabled) {
+  if (process.platform === 'darwin') {
+    if (!enabled) {
+      await rm(LOGIN_PLIST, { force: true })
+      return
+    }
+    const args = process.env.DSH_APP_EXECUTABLE
+      ? [process.env.DSH_APP_EXECUTABLE]
+      : [process.execPath, join(ROOT, 'start.js')]
+    await mkdir(dirname(LOGIN_PLIST), { recursive: true })
+    await writeFile(
+      LOGIN_PLIST,
+      `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>Label</key><string>local.dsh-x.launcher</string>
+<key>ProgramArguments</key><array>${args.map((a) => `<string>${plistEscape(a)}</string>`).join('')}</array>
+<key>RunAtLoad</key><true/><key>LimitLoadToSessionType</key><string>Aqua</string>
+</dict></plist>`,
+      { mode: 0o600 },
+    )
+    return
+  }
   if (process.platform !== 'win32') {
-    if (enabled) throw new Error('开机自启目前只支持 Windows')
+    if (enabled) throw new Error('开机自启目前只支持 Windows 和 macOS')
     return
   }
   const on = await autoStartEnabled()

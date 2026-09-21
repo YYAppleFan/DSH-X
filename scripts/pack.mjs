@@ -127,6 +127,7 @@ async function assemble() {
   await mkdir(join(OUT, 'public'), { recursive: true })
   await mkdir(join(OUT, 'assets'), { recursive: true })
   for (const file of [
+    'platform.js',
     'start.js',
     'server.js',
     'registry.js',

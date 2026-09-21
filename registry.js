@@ -1,3 +1,4 @@
+import { STATE_DIR } from './platform.js'
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { createWriteStream, existsSync } from 'node:fs'
@@ -10,7 +11,8 @@ import { fileURLToPath } from 'node:url'
 import pkg from './package.json' with { type: 'json' }
 
 const APP_ROOT = dirname(fileURLToPath(import.meta.url))
-const LOCAL_NODE = join(APP_ROOT, 'node')
+const BUNDLED_NODE = join(APP_ROOT, 'node')
+const LOCAL_NODE = process.platform === 'darwin' ? join(STATE_DIR, 'runtime') : BUNDLED_NODE
 export const REGISTRY = (process.env.npm_config_registry || 'https://registry.npmmirror.com').replace(/\/$/, '')
 const USER_AGENT = `dsh-versions/${pkg.version || '0.0.0'}`
 const packumentCache = new Map()
@@ -184,7 +186,7 @@ function npmCli(home) {
 }
 
 function npmHomes() {
-  return [...new Set([LOCAL_NODE, dirname(process.execPath)])]
+  return [...new Set([LOCAL_NODE, BUNDLED_NODE, dirname(process.execPath), join(dirname(process.execPath), '..', 'lib')])]
 }
 
 function foundNpm() {
