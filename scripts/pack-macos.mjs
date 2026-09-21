@@ -72,28 +72,10 @@ await mkdir(join(contents, 'MacOS'), { recursive: true })
 await mkdir(join(contents, 'Resources'), { recursive: true })
 await mkdir(appRoot, { recursive: true })
 
-// Generate AppIcon.icns from assets/icon.png if tools are present
-const masterIcon = join(root, 'assets', 'icon.png')
-if (existsSync(masterIcon)) {
-  const iconsetDir = join(release, 'AppIcon.iconset')
-  await rm(iconsetDir, { recursive: true, force: true })
-  await mkdir(iconsetDir, { recursive: true })
-  const iconSizes = [
-    [16, '16x16'],
-    [32, '16x16@2x'],
-    [32, '32x32'],
-    [64, '32x32@2x'],
-    [128, '128x128'],
-    [256, '128x128@2x'],
-    [256, '256x256'],
-    [512, '256x256@2x'],
-    [512, '512x512'],
-  ]
-  for (const [sz, name] of iconSizes) {
-    run('sips', ['-z', String(sz), String(sz), masterIcon, '--out', join(iconsetDir, `icon_${name}.png`)])
-  }
-  run('iconutil', ['-c', 'icns', iconsetDir, '-o', join(contents, 'Resources', 'AppIcon.icns')])
-  await rm(iconsetDir, { recursive: true, force: true })
+// Use macOS standard squircle AppIcon.icns
+const appIcon = join(root, 'assets', 'AppIcon.icns')
+if (existsSync(appIcon)) {
+  await cp(appIcon, join(contents, 'Resources', 'AppIcon.icns'))
 }
 
 for (const file of [

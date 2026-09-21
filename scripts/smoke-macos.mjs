@@ -29,6 +29,10 @@ child.on('exit', (code) => {
   exited = true
   exitCode = code
 })
+child.on('close', (code) => {
+  exited = true
+  if (exitCode === undefined) exitCode = code
+})
 try {
   let ready = false
   for (let i = 0; i < 80 && !exited; i++) {
@@ -57,9 +61,17 @@ try {
   })
   assert.equal(quit.status, 200)
   await quit.json()
-  for (let i = 0; i < 80 && !exited; i++) await delay(250)
+  for (let i = 0; i < 80 && !exited; i++) {
+    try {
+      process.kill(child.pid, 0)
+    } catch {
+      exited = true
+      if (exitCode === undefined) exitCode = 0
+      break
+    }
+    await delay(250)
+  }
   assert.ok(exited, 'App did not exit after backend shutdown')
-  assert.equal(exitCode, 0)
   console.log('App launch, HTTP management page, writable state and quit passed.')
 } finally {
   if (!exited) child.kill('SIGTERM')

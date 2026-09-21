@@ -128,23 +128,56 @@ function systemNpmRoots() {
     const base = process.env[key]
     if (base) add(join(base, 'nodejs', 'node_modules'))
   }
+  add('/opt/homebrew/lib/node_modules')
   add('/usr/local/lib/node_modules')
   add(join(homedir(), '.npm-global', 'lib', 'node_modules'))
+  add(join(homedir(), 'Library', 'pnpm', 'global', '5', 'node_modules'))
+  add(join(homedir(), '.local', 'share', 'pnpm', 'global', '5', 'node_modules'))
   return roots
 }
 
-function detectSystemDsh() {
+function candidateDshRoots() {
+  const candidates = []
+  const seen = new Set()
+  const add = (dir) => {
+    if (!dir || seen.has(dir)) return
+    seen.add(dir)
+    candidates.push(dir)
+  }
+  if (process.env.DSH_DIR) add(process.env.DSH_DIR)
+  if (process.env.DSH_PATH) add(process.env.DSH_PATH)
+  if (process.env.DSH_SRC) add(process.env.DSH_SRC)
+  add(join(homedir(), 'Documents', 'deepseek-harness'))
+  add(join(homedir(), 'deepseek-harness'))
+  add(join(homedir(), 'Projects', 'deepseek-harness'))
+  add(join(homedir(), 'Developer', 'deepseek-harness'))
+  add(join(ROOT, '..', 'deepseek-harness'))
   for (const root of systemNpmRoots()) {
-    const pkgRoot = join(root, '@deepseek-ai', 'dsh')
-    const bin = join(pkgRoot, 'lib', 'bin.js')
-    const pkgFile = join(pkgRoot, 'package.json')
-    if (!existsSync(bin) || !existsSync(pkgFile)) continue
-    try {
-      const version = String(JSON.parse(readFileSync(pkgFile, 'utf8')).version || '')
-      if (!VERSION_RE.test(version)) continue
-      return { version, bin, root: pkgRoot }
-    } catch {
-      continue
+    add(join(root, '@deepseek-ai', 'dsh'))
+  }
+  return candidates
+}
+
+function detectSystemDsh() {
+  for (const root of candidateDshRoots()) {
+    // 兼容两类布局：
+    // 1. 本地源码 monorepo（如 ~/Documents/deepseek-harness，CLI 在 apps/cli 下）
+    // 2. npm 安装包根目录（package.json + lib/bin.js）
+    const layouts = [
+      { pkgFile: join(root, 'apps', 'cli', 'package.json'), bin: join(root, 'apps', 'cli', 'lib', 'bin.js'), isLocalRepo: true },
+      { pkgFile: join(root, 'package.json'), bin: join(root, 'lib', 'bin.js'), isLocalRepo: false },
+    ]
+    for (const { pkgFile, bin, isLocalRepo } of layouts) {
+      if (!existsSync(bin) || !existsSync(pkgFile)) continue
+      try {
+        const parsed = JSON.parse(readFileSync(pkgFile, 'utf8'))
+        if (parsed.name !== PKG && parsed.name !== '@deepseek-ai/dsh-root') continue
+        const version = String(parsed.version || '')
+        if (!VERSION_RE.test(version)) continue
+        return { version, bin, root, isLocalRepo }
+      } catch {
+        continue
+      }
     }
   }
   return null
@@ -1617,6 +1650,7 @@ async function stop(version) {
 async function uninstallSystem(ver) {
   const system = detectSystemDsh()
   if (!system || system.version !== ver) throw new Error(`${ver} 未安装`)
+  if (system.isLocalRepo) throw new Error('本地开发/源码目录不能通过启动器删除')
   pushLog(`卸载系统 ${ver}`)
   await rm(system.root, { recursive: true, force: true })
   const prefix = dirname(dirname(dirname(system.root)))
