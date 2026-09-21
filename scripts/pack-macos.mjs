@@ -163,9 +163,10 @@ run('plutil', ['-lint', join(contents, 'Info.plist')])
 
 const xcassets = join(root, 'assets', 'AppIcon.xcassets')
 try {
-  const actoolCheck = spawnSync('which', ['actool'])
+  const actoolCheck = spawnSync('xcrun', ['-find', 'actool'])
   if (actoolCheck.status === 0) {
     const actoolArgs = [
+      'actool',
       '--compile',
       join(contents, 'Resources'),
       '--platform',
@@ -179,10 +180,13 @@ try {
     ]
     if (existsSync(iconPackage)) actoolArgs.push(iconPackage)
     if (existsSync(xcassets)) actoolArgs.push(xcassets)
-    run('actool', actoolArgs)
+    console.log('Compiling Assets.car with xcrun actool...')
+    run('xcrun', actoolArgs)
+  } else {
+    console.log('xcrun actool not found (Xcode.app not installed), falling back to .icns and AppIcon.icon package')
   }
-} catch {
-  // actool requires full Xcode; AppIcon.icon package and fallback icns are bundled for macOS Tahoe
+} catch (err) {
+  console.warn('actool compilation skipped:', err.message)
 }
 
 const prebuiltCar = join(root, 'assets', 'Assets.car')
