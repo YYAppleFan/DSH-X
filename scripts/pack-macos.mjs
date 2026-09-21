@@ -72,10 +72,15 @@ await mkdir(join(contents, 'MacOS'), { recursive: true })
 await mkdir(join(contents, 'Resources'), { recursive: true })
 await mkdir(appRoot, { recursive: true })
 
-// Use macOS standard squircle AppIcon.icns
-const appIcon = join(root, 'assets', 'AppIcon.icns')
+// Use macOS standard squircle AppIcon.icns (supports DSH_DARK_ICON=1 for dark icon default)
+const useDarkIcon = process.env.DSH_DARK_ICON === '1'
+const appIcon = join(root, 'assets', useDarkIcon ? 'AppIcon-dark.icns' : 'AppIcon.icns')
 if (existsSync(appIcon)) {
   await cp(appIcon, join(contents, 'Resources', 'AppIcon.icns'))
+}
+const darkIcon = join(root, 'assets', 'AppIcon-dark.icns')
+if (existsSync(darkIcon)) {
+  await cp(darkIcon, join(contents, 'Resources', 'AppIcon-dark.icns'))
 }
 
 for (const file of [

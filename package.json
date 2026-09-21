@@ -14,6 +14,7 @@
     "server": "node server.js",
     "dist": "node scripts/pack.mjs",
     "dist:mac": "node scripts/pack-macos.mjs",
+    "dist:mac:dark": "DSH_DARK_ICON=1 node scripts/pack-macos.mjs",
     "test:mac-port": "node --test tests/macos-port.test.mjs"
   },
   "author": "yyh",

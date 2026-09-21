@@ -62,6 +62,10 @@ try {
   assert.equal(quit.status, 200)
   await quit.json()
   for (let i = 0; i < 80 && !exited; i++) {
+    if (child.exitCode !== null) {
+      exited = true
+      break
+    }
     try {
       process.kill(child.pid, 0)
     } catch {
@@ -71,6 +75,7 @@ try {
     }
     await delay(250)
   }
+  if (child.exitCode !== null) exited = true
   assert.ok(exited, 'App did not exit after backend shutdown')
   console.log('App launch, HTTP management page, writable state and quit passed.')
 } finally {
