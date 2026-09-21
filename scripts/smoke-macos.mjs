@@ -1,19 +1,24 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtemp, rm, access } from 'node:fs/promises'
+import { mkdtemp, rm, access, mkdir, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { setTimeout as delay } from 'node:timers/promises'
+import { createServer } from 'node:net'
 
 const app = resolve(process.argv[2])
 const home = await mkdtemp(join(tmpdir(), 'dsh-x-smoke-'))
-const base = 'http://127.0.0.1:3780'
-try {
-  await fetch(`${base}/api/state`, { signal: AbortSignal.timeout(500) })
-  throw new Error('Smoke test requires port 3780 to be free')
-} catch (e) {
-  if (e.message === 'Smoke test requires port 3780 to be free') throw e
-}
+
+const server = createServer()
+await new Promise((res) => server.listen(0, '127.0.0.1', res))
+const port = server.address().port
+await new Promise((res) => server.close(res))
+
+const settingsDir = join(home, 'Library/Application Support/DSH-X')
+await mkdir(settingsDir, { recursive: true })
+await writeFile(join(settingsDir, 'settings.json'), JSON.stringify({ port }))
+
+const base = `http://127.0.0.1:${port}`
 const child = spawn(join(app, 'Contents/MacOS/DSH'), [], {
   env: { ...process.env, HOME: home, DSH_VERSIONS_DATA: join(home, 'versions') },
   stdio: 'inherit',
