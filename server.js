@@ -23,8 +23,10 @@ import {
   loadSettings,
   resolveDataDir,
   resolvePort,
+  resolveProfile,
   safeDataDir,
   safePort,
+  safeProfile,
   saveSettings,
   setAutoStart,
 } from './settings.js'
@@ -40,12 +42,30 @@ const APP_REPO = 'yyh-001/DSH-X'
 const APP_SETUP = 'DSH-Setup.exe'
 // 管理页端口：环境变量 PORT（开发和测试用）优先，其余看设置；启动时 startServer() 再定最终值
 let PORT = resolvePort() || DEFAULT_PORT
+/** 配置的端口被别的程序占用时，往后最多试这么多个端口。 */
+const PORT_SCAN = 20
+
+/** 探端口上是不是我们自己的管理页——用 /api/ping 的身份标记区分「自己的实例」和「别人的程序」。 */
+async function probeManager(port) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/ping`, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(800),
+    })
+    if (!res.ok) return false
+    const data = await res.json()
+    return data?.app === 'dsh-x'
+  } catch {
+    return false
+  }
+}
 const VERSION_RE = /^[0-9A-Za-z][0-9A-Za-z._+-]*$/
 const SPEC_RE = /^(?:@[a-z0-9._~-]+\/)?[a-z0-9._~-]+(?:@[a-z0-9._~+-]+)?$/i
 const GITHUB_SPEC_RE = /^github:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:#[\w./-]+)?$/
 const READY_RE = /dsh web:\s+(https?:\/\/[^\s]+)/
 const START_TIMEOUT_MS = 120_000
-const PROFILE_NAME = 'web'
+// 启动 profile：设置页可改，startServer() 里按设置定值
+let PROFILE_NAME = resolveProfile()
 const LOG_DIR = process.env.APPDATA ? join(process.env.APPDATA, 'DSH') : join(ROOT, 'data')
 const LOG_FILE = join(LOG_DIR, 'manager.log')
 const LOG_MAX_BYTES = 5 * 1024 * 1024
@@ -483,6 +503,7 @@ async function publicSettings() {
     seedMarket: stored.seedMarket !== false,
     autoDisablePlugins: stored.autoDisablePlugins !== false,
     profile: PROFILE_NAME,
+    profiles: listProfiles(),
   }
 }
 
@@ -496,6 +517,7 @@ async function saveManagerSettings(body) {
   const stored = await saveSettings({
     dataDir: DATA,
     ...('port' in body ? { port: safePort(body.port) } : {}),
+    ...('profile' in body ? { profile: safeProfile(body.profile) } : {}),
     autoStart: Boolean(body.autoStart),
     seedMarket: body.seedMarket !== false,
     autoDisablePlugins: body.autoDisablePlugins !== false,
@@ -504,6 +526,11 @@ async function saveManagerSettings(body) {
     await setAutoStart(stored.autoStart)
   } catch (error) {
     pushLog(`开机自启未写入: ${error instanceof Error ? error.message : error}`)
+  }
+  // profile 立即生效：插件页、启动参数、npmrc 都读这个变量（已经在跑的 dsh 不受影响）
+  if (stored.profile && stored.profile !== PROFILE_NAME) {
+    pushLog(`启动 profile 改为 ${stored.profile}`)
+    PROFILE_NAME = stored.profile
   }
   if (stored.seedMarket) {
     const versions = listedVersions(await loadConfig())
@@ -608,7 +635,7 @@ function spawnDsh(version, extra) {
 }
 
 async function ensureProfileNpmrc() {
-  const dir = join(homeDir(), 'profiles', 'web')
+  const dir = join(homeDir(), 'profiles', PROFILE_NAME)
   await mkdir(dir, { recursive: true })
   const file = join(dir, '.npmrc')
   let text = ''
@@ -1475,15 +1502,92 @@ export function setHost(next) {
   host = { ...host, ...next }
 }
 
-function openLocalUrl(target) {
-  if (typeof target !== 'string' || !/^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:[/?#]|$)/i.test(target)) {
+/**
+ * dsh 自带的 profile 模板名（见 @deepseek-ai/dsh-app-boot 的 PROFILE_TEMPLATES）：
+ * 这些名字首次使用时 dsh 会自动初始化。其余名字必须先在磁盘上存在（目录里有
+ * package.json），否则 dsh 会直接拒绝启动——所以设置页只让人从可用列表里挑。
+ */
+const TEMPLATE_PROFILES = ['web', 'headless', 'acp', 'sdk', 'sdk-minimal']
+
+/** 可切换的 profile：磁盘上已初始化的 + dsh 自带模板名 + 当前值。 */
+function listProfiles() {
+  const names = new Set(TEMPLATE_PROFILES)
+  const root = join(homeDir(), 'profiles')
+  try {
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === 'node_modules') continue
+      if (existsSync(join(root, entry.name, 'package.json'))) names.add(entry.name)
+    }
+  } catch { /* 还没有 profiles 目录 */ }
+  if (PROFILE_NAME) names.add(PROFILE_NAME)
+  return [...names].sort()
+}
+
+/** 允许当作"本机"的主机名——打开本机页面、判断请求来源都用它。 */
+const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
+
+/** 严格解析成本机 http(s) 地址；不是就抛错（前缀正则挡不住 `/?&calc` 这种尾巴）。 */
+function assertLocalUrl(target) {
+  let parsed
+  try {
+    parsed = new URL(String(target))
+  } catch {
     throw new Error('只能打开本机地址')
   }
+  if (!/^https?:$/.test(parsed.protocol) || !LOCAL_HOSTS.has(parsed.hostname.toLowerCase())) {
+    throw new Error('只能打开本机地址')
+  }
+  return parsed.href
+}
+
+/**
+ * 交给系统默认程序打开。
+ *
+ * Windows 走 `cmd /c start`，而 cmd 会把这行**再解析一遍**：URL 里的 `&` 是语句
+ * 分隔符、`|<>^()%"` 各有含义，于是 `http://127.0.0.1:1/?&calc` 能直接跑起任意命令
+ * （Node 只给含空格的参数加引号，而 URL 里通常没有空格）。所以这里只放行 cmd 会
+ * 原样看待的字符——够用（本机地址就是 `http://127.0.0.1:端口/路径?k=v`），
+ * 其余一律拒绝，比在字符串上做转义可靠。
+ */
+const CMD_SAFE_URL = /^[A-Za-z0-9\-._~:/?#\[\]@$'*,;=+]+$/
+
+function openExternal(target) {
+  const url = String(target)
   if (process.platform === 'win32') {
-    execFile('cmd', ['/c', 'start', '', target], { windowsHide: true })
+    if (!CMD_SAFE_URL.test(url)) throw new Error('地址里含不能安全打开的字符')
+    execFile('cmd', ['/c', 'start', '', url], { windowsHide: true })
     return
   }
-  execFile(process.platform === 'darwin' ? 'open' : 'xdg-open', [target])
+  execFile(process.platform === 'darwin' ? 'open' : 'xdg-open', [url])
+}
+
+function openLocalUrl(target) {
+  openExternal(assertLocalUrl(target))
+}
+
+/**
+ * 请求是不是来自本机。带 Origin 的只有浏览器：别的网页往 127.0.0.1 发跨站 POST 时
+ * 会带上自己的 Origin（file:// 页面则是 `null`），而这个管理页没有任何鉴权，不挡的话
+ * 任意网页都能让启动器装插件、起进程、开链接。托盘 / curl / 本机脚本不带 Origin。
+ */
+function sameSiteRequest(req) {
+  const origin = req.headers.origin
+  if (!origin) return true
+  try {
+    const parsed = new URL(origin)
+    return LOCAL_HOSTS.has(parsed.hostname.toLowerCase()) && (!parsed.port || Number(parsed.port) === PORT)
+  } catch {
+    return false
+  }
+}
+
+/** Host 头是不是我们自己（DNS rebinding 的请求里写的是攻击者的域名）。 */
+function isLocalHostHeader(host) {
+  if (!host) return true
+  const match = /^(\[[^\]]+\]|[^:]+)(?::(\d+))?$/.exec(String(host).trim().toLowerCase())
+  if (!match) return false
+  if (!LOCAL_HOSTS.has(match[1])) return false
+  return !match[2] || Number(match[2]) === PORT
 }
 
 export { snapshot, stop }
@@ -1551,6 +1655,16 @@ function send(res, status, body, type = 'application/json; charset=utf-8') {
 }
 
 async function handleApi(req, res, url) {
+  // 身份标记：端口被占用时我们要能分辨那是自己的另一个实例还是别人的程序
+  if (url.pathname === '/api/ping') {
+    send(res, 200, { app: 'dsh-x', version: APP_VERSION, port: PORT })
+    return
+  }
+  // 改状态的请求只认本机来源（浏览器会带 Origin，本机程序不会）
+  if (req.method !== 'GET' && !sameSiteRequest(req)) {
+    send(res, 403, { error: '跨站请求被拒绝' })
+    return
+  }
   if (req.method === 'GET' && url.pathname === '/api/remote') {
     send(res, 200, await fetchRemote())
     return
@@ -1709,15 +1823,22 @@ function isTextFile(file) {
 export async function startServer() {
   if (server) return Promise.resolve(`http://127.0.0.1:${PORT}`)
   await ensureSettings()
-  // 设置页改过端口的话，这里拿到的就是新值（PORT 环境变量仍然优先，测试用）
+  // 设置页改过端口 / profile 的话，这里拿到的就是新值（PORT 环境变量仍然优先，测试用）
   if (!process.env.PORT) PORT = resolvePort()
+  PROFILE_NAME = resolveProfile()
   DATA = resolveDataDir()
   CONFIG = join(DATA, 'config.json')
   await mkdir(DATA, { recursive: true })
   cleanStaleUpdates()
   // 默认 16KB 的请求头上限会被浏览器里堆积的 cookie 顶爆（HTTP 431），放宽到 128KB
-  server = createServer({ maxHeaderSize: 128 * 1024 }, async (req, res) => {
+  const handler = async (req, res) => {
     try {
+      // Host 必须是本机：恶意域名解析到 127.0.0.1（DNS rebinding）时浏览器带的是那个
+      // 域名，浏览器会把它当同源，GET 接口（含 dsh 的 token、日志）就能被读走
+      if (!isLocalHostHeader(req.headers.host)) {
+        send(res, 403, 'forbidden', 'text/plain; charset=utf-8')
+        return
+      }
       const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`)
       if (url.pathname.startsWith('/api/')) {
         await handleApi(req, res, url)
@@ -1742,21 +1863,52 @@ export async function startServer() {
       pushLog(`错误: ${message}`)
       send(res, 500, { error: message })
     }
-  })
-  return new Promise((resolve, reject) => {
-    server.listen(PORT, '127.0.0.1', () => {
-      pushLog(`DSH 管理器 http://127.0.0.1:${PORT}`)
-      pushLog(`版本目录 ${DATA}`)
-      pushLog(`DSH_HOME ${homeDir()}`)
-      const system = detectSystemDsh()
-      if (system) pushLog(`发现系统已安装 ${system.version}`)
-      console.log(`dsh-versions: http://127.0.0.1:${PORT}`)
-      console.log(`dsh-versions data: ${DATA}`)
-      console.log(`dsh-versions home: ${homeDir()}`)
-      resolve(`http://127.0.0.1:${PORT}`)
-    })
-    server.on('error', reject)
-  })
+  }
+
+  // 端口顺延：配置的端口被**别的程序**占了就往后试（最多 PORT_SCAN 个），被自己的
+  // 另一个实例占着则抛 EALREADY，让 start.js 去把它唤醒——双击图标不该起出第二个管理器。
+  const preferred = PORT
+  let lastError = null
+  for (let offset = 0; offset < PORT_SCAN; offset += 1) {
+    const candidate = preferred + offset
+    if (candidate > 65535) break
+    const attempt = createServer({ maxHeaderSize: 128 * 1024 }, handler)
+    try {
+      await new Promise((resolve, reject) => {
+        attempt.once('error', reject)
+        attempt.listen(candidate, '127.0.0.1', () => {
+          attempt.off('error', reject)
+          resolve()
+        })
+      })
+    } catch (error) {
+      attempt.close()
+      if (error?.code !== 'EADDRINUSE') throw error
+      lastError = error
+      if (await probeManager(candidate)) {
+        const busy = new Error(`管理页已经在 ${candidate} 端口上跑着`)
+        busy.code = 'EALREADY'
+        busy.port = candidate
+        throw busy
+      }
+      pushLog(`端口 ${candidate} 被别的程序占用，试下一个`)
+      continue
+    }
+    attempt.on('error', (error) => pushLog(`管理服务出错: ${error?.message || error}`))
+    server = attempt
+    PORT = candidate
+    if (offset > 0) pushLog(`管理页改用端口 ${PORT}（${preferred} 起被占用）`)
+    pushLog(`DSH 管理器 http://127.0.0.1:${PORT}`)
+    pushLog(`版本目录 ${DATA}`)
+    pushLog(`DSH_HOME ${homeDir()}`)
+    const system = detectSystemDsh()
+    if (system) pushLog(`发现系统已安装 ${system.version}`)
+    console.log(`dsh-versions: http://127.0.0.1:${PORT}`)
+    console.log(`dsh-versions data: ${DATA}`)
+    console.log(`dsh-versions home: ${homeDir()}`)
+    return `http://127.0.0.1:${PORT}`
+  }
+  throw lastError ?? new Error('没有可用端口')
 }
 
 export async function stopAll() {

@@ -32,6 +32,8 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const DEFAULT_PORT: u16 = 3780;
 /// 等管理服务起来的时限；超了也照常开窗口，让页面自己显示连接失败。
 const PORT_WAIT: Duration = Duration::from_secs(25);
+/// 找管理页时最多往后扫这么多端口（和 server.js 的 PORT_SCAN 保持一致）。
+const PORT_SCAN: u16 = 20;
 /// 首次出现的窗口尺寸（逻辑像素）
 const WINDOW_W: f64 = 1100.0;
 const WINDOW_H: f64 = 760.0;
@@ -294,11 +296,13 @@ fn run_error_window(event_loop: EventLoop<UserEvent>, root: &Path, title: &str, 
     })
 }
 
-/// 管理页端口：settings.json 里的 port（设置页可改），读不到/不合法就用默认值。
-static MANAGER_PORT: OnceLock<u16> = OnceLock::new();
+/// 配置端口：settings.json 里的 port（设置页可改），读不到/不合法就用默认值。
+static CONFIGURED_PORT: OnceLock<u16> = OnceLock::new();
+/// 实际在用的端口：管理页在自己端口被别的程序占用时会往后顺延，扫到哪个用哪个。
+static LIVE_PORT: OnceLock<u16> = OnceLock::new();
 
-fn manager_port() -> u16 {
-    *MANAGER_PORT.get_or_init(|| {
+fn configured_port() -> u16 {
+    *CONFIGURED_PORT.get_or_init(|| {
         let text = std::env::var_os("APPDATA")
             .map(|dir| Path::new(&dir).join("DSH").join("settings.json"))
             .and_then(|file| std::fs::read_to_string(file).ok());
@@ -310,28 +314,67 @@ fn manager_port() -> u16 {
     })
 }
 
+fn live_port() -> u16 {
+    *LIVE_PORT.get().unwrap_or(&configured_port())
+}
+
 fn manager_url() -> String {
-    format!("http://127.0.0.1:{}/", manager_port())
+    format!("http://127.0.0.1:{}/", live_port())
 }
 
 fn manager_addr() -> String {
-    format!("127.0.0.1:{}", manager_port())
+    format!("127.0.0.1:{}", live_port())
 }
 
-fn manager_is_up() -> bool {
-    manager_addr()
-        .parse()
+/// 端口上是不是我们自己的管理页——/api/ping 带身份标记，能区分自己的实例和别人的程序。
+fn probe_manager(port: u16) -> bool {
+    let Some(text) = http_get(&format!("127.0.0.1:{port}"), "/api/ping") else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(&text)
         .ok()
-        .and_then(|addr: std::net::SocketAddr| TcpStream::connect_timeout(&addr, Duration::from_millis(300)).ok())
-        .is_some()
+        .and_then(|json| json.get("app").and_then(|value| value.as_str()).map(|app| app == "dsh-x"))
+        .unwrap_or(false)
 }
 
-/// 拉不起窗口时退回老做法：让系统浏览器打开管理页。
+/// 找在跑的管理页：配置端口被占时它会顺延，所以从配置端口开始往后扫。
+fn find_manager() -> Option<u16> {
+    (0..PORT_SCAN)
+        .map(|offset| configured_port().saturating_add(offset))
+        .find(|port| probe_manager(*port))
+}
+
+/// 等管理页起来（启动到 listen 之间有一小段），并把实际端口定下来。
+fn wait_for_manager() -> Option<u16> {
+    let deadline = Instant::now() + PORT_WAIT;
+    loop {
+        if let Some(port) = find_manager() {
+            let _ = LIVE_PORT.set(port);
+            return Some(port);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+}
+
+
+
+/// 用系统默认程序打开链接。
+///
+/// 别用 `cmd /c start`：cmd 会把 URL 再解析一遍，里面的 `&` 就是语句分隔符，
+/// 页面上任何一个链接（插件页面、更新日志）被构造成 `http://127.0.0.1:1/?&calc`
+/// 就成了任意命令执行。这里直接调 ShellExecuteW——`start` 内部走的也是它，
+/// 参数按 argv 原样传，中间没有 shell。
 fn open_in_browser(url: &str) {
-    let _ = Command::new("cmd")
-        .args(["/c", "start", "", url])
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn();
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let verb: Vec<u16> = "open\0".encode_utf16().collect();
+    let file: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL);
+    }
 }
 
 /// 极简 HTTP GET，只用来问本机管理服务一个短路径；读完整响应取正文即可。
@@ -389,7 +432,8 @@ fn main() {
     // 已经有实例在跑就别再走后面那一套了。否则会先建出一个窗口、再拉一次 node 和
     // WebView2，等发现端口被占才收摊——用户看到的就是一个多余的窗口闪一下。
     // 直接让那个实例把窗口叫出来就完事（它的 node 收到 /api/wake 会回信号给我们）。
-    if manager_is_up() {
+    if let Some(port) = find_manager() {
+        let _ = LIVE_PORT.set(port);
         let _ = http_post(&manager_addr(), "/api/wake");
         std::process::exit(0);
     }
@@ -566,11 +610,9 @@ fn main() {
         None => None,
     };
 
-    // 等管理服务起来再导航，否则 webview 会先撞上连接失败（它自己不会重试）
-    let deadline = Instant::now() + PORT_WAIT;
-    while Instant::now() < deadline && !manager_is_up() {
-        thread::sleep(Duration::from_millis(200));
-    }
+    // 等管理服务起来再导航，否则 webview 会先撞上连接失败（它自己不会重试）。
+    // 端口被占用时管理页会顺延，所以这里扫一遍把真正的端口定下来。
+    wait_for_manager();
 
     // 直接加载，不问服务端：window=1 是个常量，绕一趟 HTTP 只会拖慢启动——而且
     // 那个接口内部要发网络请求，一旦超过读超时就会退化成不带 window=1 的地址，

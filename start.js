@@ -28,8 +28,15 @@ function log(...args) {
   console.error(...args)
 }
 
+/** cmd 会二次解析命令行，URL 里出现它的元字符就不安全（原因见 server.js 的 openExternal）。 */
+const CMD_SAFE_URL = /^[A-Za-z0-9\-._~:/?#\[\]@$'*,;=+]+$/
+
 function openPage(target = MANAGER_URL) {
   if (process.platform === 'win32') {
+    if (!CMD_SAFE_URL.test(target)) {
+      log(`地址含不能安全打开的字符，已跳过：${target}`)
+      return
+    }
     execFile('cmd', ['/c', 'start', '', target], { windowsHide: true })
     return
   }
@@ -52,9 +59,11 @@ async function showManager() {
   openPage(MANAGER_URL)
 }
 
-async function wakeExisting() {
+/** 唤醒已经在跑的那个实例（端口可能因为顺延而不是配置值）。 */
+async function wakeExisting(port = PORT) {
+  const base = `http://127.0.0.1:${port}/`
   try {
-    const res = await fetch(`${MANAGER_URL}api/wake`, {
+    const res = await fetch(`${base}api/wake`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: '{}',
@@ -73,13 +82,16 @@ async function main() {
   try {
     await startServer()
   } catch (error) {
-    if (error && error.code === 'EADDRINUSE') {
-      log(`端口 ${PORT} 已被占用，通知已在运行的实例把窗口叫出来`)
-      await wakeExisting()
+    // 端口被自己的另一个实例占着：唤醒它、把窗口叫出来，然后退出（不起第二个管理器）。
+    // 被别的程序占用的情况已经在 startServer() 里顺延掉了，走不到这里。
+    if (error && error.code === 'EALREADY') {
+      const port = error.port || PORT
+      log(`管理页已经在 ${port} 端口上跑着，通知它把窗口叫出来`)
+      await wakeExisting(port)
       await showManager()
       if (!APP_WINDOW) {
         try {
-          const res = await fetch(`${MANAGER_URL}api/state`, { cache: 'no-store', signal: AbortSignal.timeout(3000) })
+          const res = await fetch(`http://127.0.0.1:${port}/api/state`, { cache: 'no-store', signal: AbortSignal.timeout(3000) })
           const data = await res.json()
           if (data.running?.url) openPage(data.running.url)
         } catch { /* 管理页开了就够 */ }

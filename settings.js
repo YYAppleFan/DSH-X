@@ -15,9 +15,13 @@ const RUN_NAME = 'DSH'
 /** 管理页端口，默认这个；被别的程序占了可以在设置页改。 */
 export const DEFAULT_PORT = 3780
 
+/** dsh 的启动 profile（一个 profile 一套插件和数据），默认 web。 */
+export const DEFAULT_PROFILE = 'web'
+
 export const DEFAULTS = {
   dataDir: '',
   port: DEFAULT_PORT,
+  profile: DEFAULT_PROFILE,
   autoStart: false,
   seedMarket: true,
   // 启动失败时按错误点名自动禁用问题插件（兼容模式），再重试
@@ -33,6 +37,29 @@ export function safePort(value) {
     throw new Error('端口要填 1-65535 之间的整数')
   }
   return port
+}
+
+/** profile 名会变成 ~/.dsh/profiles 下的目录名，只允许目录安全字符。 */
+export function safeProfile(value) {
+  const name = String(value ?? '').trim()
+  if (!/^[A-Za-z0-9._-]{1,32}$/.test(name) || name === '.' || name === '..') {
+    throw new Error('profile 名只能用字母、数字、点、下划线、连字符（1-32 个字符）')
+  }
+  return name
+}
+
+/** 启动 profile：环境变量 DSH_PROFILE 优先（开发和测试用），其次 settings.json。 */
+export function resolveProfile() {
+  if (process.env.DSH_PROFILE) {
+    try {
+      return safeProfile(process.env.DSH_PROFILE)
+    } catch { /* 环境变量不合法就退回设置 */ }
+  }
+  try {
+    return safeProfile(loadSettingsSync().profile)
+  } catch {
+    return DEFAULT_PROFILE
+  }
 }
 
 /** 管理页端口：环境变量 PORT（开发和测试用）优先，其次 settings.json。 */
@@ -107,6 +134,13 @@ export async function saveSettings(patch) {
     merged.port = DEFAULT_PORT
   }
   if ('port' in patch) merged.port = safePort(patch.port)
+  // 同端口：脏值顺手修回默认，显式改 profile 时才把错误抛给调用方
+  try {
+    merged.profile = safeProfile(merged.profile)
+  } catch {
+    merged.profile = DEFAULT_PROFILE
+  }
+  if ('profile' in patch) merged.profile = safeProfile(patch.profile)
   merged.autoStart = Boolean(merged.autoStart)
   merged.seedMarket = merged.seedMarket !== false
   merged.autoDisablePlugins = merged.autoDisablePlugins !== false

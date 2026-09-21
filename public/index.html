@@ -241,7 +241,7 @@
       .controls { margin-left: auto; }
     }
     label { display: block; color: var(--muted); font-size: 12px; letter-spacing: 0.08em; margin-bottom: 8px; }
-    input[type=text], input[type=number] {
+    input[type=text], input[type=number], select {
       width: 100%;
       appearance: none;
       background: #fff;
@@ -251,7 +251,12 @@
       padding: 12px 14px;
       font: inherit;
     }
-    input[type=text]:focus, input[type=number]:focus { outline: 1px solid var(--accent); }
+    input[type=text]:focus, input[type=number]:focus, select:focus { outline: 1px solid var(--accent); }
+    select {
+      width: 148px;
+      flex: 0 0 auto;
+      cursor: pointer;
+    }
     /* 设置页的行：标题在左、控件在右，跟开关同一套节奏 */
     .field {
       display: flex;
@@ -269,6 +274,35 @@
     }
     .field input::-webkit-outer-spin-button,
     .field input::-webkit-inner-spin-button { appearance: none; margin: 0; }
+    /* 高级设置：默认折叠，不常改的东西别占版面 */
+    .advanced {
+      margin: 18px 0 0;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+    }
+    .advanced summary {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      cursor: pointer;
+      list-style: none;
+    }
+    .advanced summary::-webkit-details-marker { display: none; }
+    .advanced summary::before {
+      content: "";
+      width: 0;
+      height: 0;
+      border-left: 5px solid currentColor;
+      border-top: 4px solid transparent;
+      border-bottom: 4px solid transparent;
+      transition: transform 0.15s ease;
+    }
+    .advanced[open] summary::before { transform: rotate(90deg); }
+    .advanced summary:hover { color: var(--text); }
+    .advanced .field { margin: 14px 0 0; }
     /* 版本下拉：原生 select 的弹出列表没法跟随页面配色，这里整套自绘 */
     .select { position: relative; }
     .select-trigger {
@@ -803,10 +837,15 @@
     </div>
     <div id="page-settings" class="page">
       <div class="card settings">
-        <label class="field"><span>管理页端口</span><input id="port" type="number" min="1" max="65535" step="1" inputmode="numeric" /></label>
         <label class="toggle"><span>开机自启</span><input id="autoStart" type="checkbox" /></label>
         <label class="toggle"><span>插件市场</span><input id="seedMarket" type="checkbox" /></label>
         <label class="toggle"><span>兼容模式</span><input id="autoDisable" type="checkbox" /></label>
+        <details class="advanced">
+          <summary>高级设置</summary>
+          <label class="field"><span>启动 profile</span><select id="profile"></select></label>
+          <label class="field"><span>管理页端口</span><input id="port" type="number" min="1" max="65535" step="1" inputmode="numeric" /></label>
+          <p class="hint" id="portHint"></p>
+        </details>
         <button class="primary" id="saveSettings" type="button" style="margin-top: 22px">保存</button>
         <p class="hint" id="settingsHint"></p>
       </div>
@@ -1860,14 +1899,28 @@
     const autoStartEl = document.getElementById('autoStart')
     const seedMarketEl = document.getElementById('seedMarket')
     const autoDisableEl = document.getElementById('autoDisable')
+    const profileEl = document.getElementById('profile')
     const portEl = document.getElementById('port')
+    const portHint = document.getElementById('portHint')
     const settingsHint = document.getElementById('settingsHint')
     const saveSettingsEl = document.getElementById('saveSettings')
 
     function fillSettings(data) {
+      if ('profile' in data) {
+        const list = Array.isArray(data.profiles) && data.profiles.length ? data.profiles : [String(data.profile ?? 'web')]
+        profileEl.innerHTML = list.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('')
+        profileEl.value = String(data.profile ?? '')
+      }
       if ('port' in data) {
         portEl.value = String(data.port ?? '')
         portEl.placeholder = String(data.portDefault ?? 3780)
+      }
+      // 端口被别的程序占用时管理页会顺延，这里只在"配置值 ≠ 实际值"时说明一句
+      if (portHint) {
+        const live = Number(data.listenPort)
+        portHint.textContent = live && live !== Number(data.port)
+          ? `当前实际监听 ${live} 端口（配置的 ${data.port} 被别的程序占用，启动时自动顺延）。`
+          : ''
       }
       if ('autoStart' in data) autoStartEl.checked = Boolean(data.autoStart)
       if ('seedMarket' in data) seedMarketEl.checked = data.seedMarket !== false
@@ -1885,6 +1938,7 @@
       settingsHint.textContent = '正在保存…'
       try {
         const data = await post('/api/settings', {
+          profile: profileEl.value.trim(),
           port: Number(portEl.value),
           autoStart: autoStartEl.checked,
           seedMarket: seedMarketEl.checked,
