@@ -185,6 +185,12 @@ try {
   // actool requires full Xcode; AppIcon.icon package and fallback icns are bundled for macOS Tahoe
 }
 
+const prebuiltCar = join(root, 'assets', 'Assets.car')
+if (!existsSync(join(contents, 'Resources', 'Assets.car')) && existsSync(prebuiltCar)) {
+  console.log('Using precompiled assets/Assets.car for macOS Tahoe appearances...')
+  await cp(prebuiltCar, join(contents, 'Resources', 'Assets.car'))
+}
+
 console.log('Codesigning bundle...')
 run('codesign', ['--force', '--sign', '-', join(nodeDir, 'node')])
 run('codesign', ['--force', '--sign', '-', app])

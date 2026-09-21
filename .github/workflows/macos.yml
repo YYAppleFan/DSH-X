@@ -31,6 +31,12 @@ jobs:
           rustup default stable
       - name: Backend tests
         run: npm run test:mac-port
+      - name: Configure Xcode environment
+        run: |
+          if [ -d "/Applications/Xcode.app" ]; then
+            sudo xcode-select -s /Applications/Xcode.app
+          fi
+          xcrun actool --version || true
       - name: Build, sign and smoke-test app
         run: npm run dist:mac
       - uses: actions/upload-artifact@v4
@@ -39,5 +45,6 @@ jobs:
           path: |
             release/DSH-X-macOS-${{ matrix.arch }}.zip
             release/DSH-X-macOS-${{ matrix.arch }}.zip.sha256
-          if-no-files-found: error
+            release/DSH-X.app/Contents/Resources/Assets.car
+          if-no-files-found: warn
           retention-days: 14
