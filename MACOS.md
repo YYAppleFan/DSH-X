@@ -20,6 +20,10 @@
   - 打包内置官方 Node.js 绿色运行时与 pnpm 8.15.9，App 外部下载运行依赖隔离至用户目录，不破坏 App 代码签名。
 - **跨平台构建**：
   - 保留 Windows 打包入口，新增 `npm run dist:mac`。
+- **macOS 标准图标与暗色模式自适应**：
+  - 遵循 Apple Human Interface Guidelines（macOS 圆角矩形 Squircle 规范与 1024x1024 Retina 多分辨率）；
+  - 运行时动态感知系统外观切换（深色/浅色模式），通过 Cocoa 原生接口实时无缝切换程序坞（Dock）图标；
+  - 提供 `npm run dist:mac:dark` 构建入口，支持静态默认打包为暗色图标（适合深色桌面偏好的用户）。
 
 ## 本地 Mac 构建
 
