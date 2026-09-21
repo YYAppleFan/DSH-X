@@ -83,6 +83,12 @@ if (existsSync(darkIcon)) {
   await cp(darkIcon, join(contents, 'Resources', 'AppIcon-dark.icns'))
 }
 
+// Bundle modern macOS Tahoe AppIcon.icon package
+const iconPackage = join(root, 'assets', 'AppIcon.icon')
+if (existsSync(iconPackage)) {
+  await cp(iconPackage, join(contents, 'Resources', 'AppIcon.icon'), { recursive: true })
+}
+
 for (const file of [
   'platform.js',
   'start.js',
@@ -156,27 +162,27 @@ await writeFile(
 run('plutil', ['-lint', join(contents, 'Info.plist')])
 
 const xcassets = join(root, 'assets', 'AppIcon.xcassets')
-if (existsSync(xcassets)) {
-  try {
-    const actoolCheck = spawnSync('which', ['actool'])
-    if (actoolCheck.status === 0) {
-      run('actool', [
-        '--compile',
-        join(contents, 'Resources'),
-        '--platform',
-        'macosx',
-        '--minimum-deployment-target',
-        '11.0',
-        '--target-device',
-        'mac',
-        '--app-icon',
-        'AppIcon',
-        xcassets,
-      ])
-    }
-  } catch {
-    // actool requires full Xcode; dynamic Cocoa appearance detection in launcher handles live switching
+try {
+  const actoolCheck = spawnSync('which', ['actool'])
+  if (actoolCheck.status === 0) {
+    const actoolArgs = [
+      '--compile',
+      join(contents, 'Resources'),
+      '--platform',
+      'macosx',
+      '--minimum-deployment-target',
+      '11.0',
+      '--target-device',
+      'mac',
+      '--app-icon',
+      'AppIcon',
+    ]
+    if (existsSync(iconPackage)) actoolArgs.push(iconPackage)
+    if (existsSync(xcassets)) actoolArgs.push(xcassets)
+    run('actool', actoolArgs)
   }
+} catch {
+  // actool requires full Xcode; AppIcon.icon package and fallback icns are bundled for macOS Tahoe
 }
 
 console.log('Codesigning bundle...')
