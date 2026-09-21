@@ -9,7 +9,6 @@ on:
         type: choice
         options:
           - 'auto'
-          - 'macos-27'
           - 'xcode-27'
           - 'macos-26'
   push:
@@ -22,7 +21,7 @@ jobs:
   build-macos-27:
     name: Build (macOS 27 ARM64)
     if: github.event.inputs.target_runner != 'macos-26'
-    runs-on: ${{ github.event.inputs.target_runner == 'xcode-27' && 'xcode-27' || 'macos-27' }}
+    runs-on: xcode-27
     continue-on-error: true
     timeout-minutes: 45
     env:
